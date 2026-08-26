@@ -1,0 +1,18 @@
+{
+  "name": "zique-aliyun-function",
+  "version": "1.0.0",
+  "private": true,
+  "description": "字雀多人房间 API for Alibaba Cloud Function Compute",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test.cjs"
+  },
+  "dependencies": {
+    "tablestore": "5.6.5"
+  },
+  "overrides": {
+    "tablestore": {
+      "protobufjs": "7.6.5"
+    }
+  }
+}

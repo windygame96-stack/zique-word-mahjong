@@ -17,6 +17,13 @@ const AVATAR_COLORS: { key: AvatarColor; label: string }[] = [
   { key: "amber", label: "琥珀黄" }, { key: "ink", label: "墨色" },
 ];
 
+function gameApi(path: string) {
+  const configuredBase = typeof window === "undefined"
+    ? ""
+    : ((window as typeof window & { __ZIQUE_API_BASE__?: string }).__ZIQUE_API_BASE__ || "");
+  return `${configuredBase.replace(/\/$/, "")}${path}`;
+}
+
 function getDeviceKey() {
   let key = localStorage.getItem("zique_player_key");
   if (!key) {
@@ -58,7 +65,7 @@ export default function Home() {
     const restore = async () => {
       if (!targetRoom) { setRestoring(false); return; }
       try {
-        const response = await fetch(`/api/game?code=${targetRoom}&playerKey=${encodeURIComponent(key)}`, { cache: "no-store" });
+        const response = await fetch(gameApi(`/api/game?code=${targetRoom}&playerKey=${encodeURIComponent(key)}`), { cache: "no-store" });
         if (response.ok) {
           const data = await response.json();
           setRoom(data);
@@ -66,7 +73,7 @@ export default function Home() {
           return;
         }
         if (linkedRoom && savedName && response.status === 403) {
-          const join = await fetch("/api/game", {
+          const join = await fetch(gameApi("/api/game"), {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "join", code: linkedRoom, playerKey: key, name: savedName, avatarColor: color }),
           });
@@ -88,7 +95,7 @@ export default function Home() {
     if (!room || !playerKey) return;
     const timer = window.setInterval(async () => {
       try {
-        const response = await fetch(`/api/game?code=${room.code}&playerKey=${encodeURIComponent(playerKey)}`, { cache: "no-store" });
+        const response = await fetch(gameApi(`/api/game?code=${room.code}&playerKey=${encodeURIComponent(playerKey)}`), { cache: "no-store" });
         if (response.ok) setRoom(await response.json());
       } catch { /* 下一轮自动重试 */ }
     }, 1400);
@@ -103,7 +110,7 @@ export default function Home() {
     try {
       localStorage.setItem("zique_name", name.trim() || "牌友");
       localStorage.setItem("zique_avatar_color", avatarColor);
-      const response = await fetch("/api/game", {
+      const response = await fetch(gameApi("/api/game"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, code: room?.code || joinCode, playerKey, name, avatarColor, ...extra }),
       });
