@@ -2,14 +2,20 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type PlayerView = { id: string; name: string; avatar: string; avatarUrl: string | null; handCount: number; seat: number };
+type AvatarColor = "cinnabar" | "jade" | "ocean" | "plum" | "amber" | "ink";
+type PlayerView = { id: string; name: string; avatar: string; avatarColor: AvatarColor; avatarUrl: string | null; handCount: number; seat: number };
 type RoomView = {
   code: string; revision: number; status: "waiting" | "playing" | "finished";
   phase: "waiting" | "draw" | "discard" | "finished"; turn: number; currentPlayerId: string | null;
   hostId: string; winnerId: string | null; winningSentence: string | null; deckCount: number;
   discards: string[]; log: string[]; players: PlayerView[]; hand: string[]; me: { id: string; name: string; seat: number } | null;
 };
-type User = { id: string; name: string; avatarUrl: string | null };
+
+const AVATAR_COLORS: { key: AvatarColor; label: string }[] = [
+  { key: "cinnabar", label: "朱砂红" }, { key: "jade", label: "翡翠绿" },
+  { key: "ocean", label: "远山蓝" }, { key: "plum", label: "梅子紫" },
+  { key: "amber", label: "琥珀黄" }, { key: "ink", label: "墨色" },
+];
 
 function getDeviceKey() {
   let key = localStorage.getItem("zique_player_key");
@@ -29,24 +35,53 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [rulesOpen, setRulesOpen] = useState(false);
-  const [user, setUser] = useState<User | null>(null);
-  const [wechatConfigured, setWechatConfigured] = useState(false);
+  const [avatarColor, setAvatarColor] = useState<AvatarColor>("cinnabar");
+  const [restoring, setRestoring] = useState(true);
 
   useEffect(() => {
     const key = getDeviceKey();
     const savedName = localStorage.getItem("zique_name");
     const params = new URLSearchParams(window.location.search);
+    const savedColor = (localStorage.getItem("zique_avatar_color") || "") as AvatarColor;
+    const color = AVATAR_COLORS.some((item) => item.key === savedColor)
+      ? savedColor
+      : AVATAR_COLORS[Math.abs([...key].reduce((sum, char) => sum + char.charCodeAt(0), 0)) % AVATAR_COLORS.length].key;
+    const linkedRoom = (params.get("room") || "").slice(0, 4);
+    const rememberedRoom = (localStorage.getItem("zique_last_room") || "").slice(0, 4);
+    const targetRoom = linkedRoom || rememberedRoom;
     setPlayerKey(key);
     if (savedName) setName(savedName);
-    if (params.get("room")) setJoinCode((params.get("room") || "").slice(0, 4));
-    const auth = params.get("auth");
-    if (auth === "wechat_setup_needed") setMessage("微信登录还差开放平台配置；现在可先用昵称开房");
-    if (auth === "wechat_failed") setMessage("微信登录没有完成，请再试一次");
-    fetch("/api/auth/me").then((response) => response.json()).then((data) => {
-      setUser(data.user || null);
-      setWechatConfigured(Boolean(data.wechatConfigured));
-      if (data.user?.name) setName(data.user.name);
-    }).catch(() => undefined);
+    setAvatarColor(color);
+    localStorage.setItem("zique_avatar_color", color);
+    if (targetRoom) setJoinCode(targetRoom);
+
+    const restore = async () => {
+      if (!targetRoom) { setRestoring(false); return; }
+      try {
+        const response = await fetch(`/api/game?code=${targetRoom}&playerKey=${encodeURIComponent(key)}`, { cache: "no-store" });
+        if (response.ok) {
+          const data = await response.json();
+          setRoom(data);
+          history.replaceState(null, "", `?room=${targetRoom}`);
+          return;
+        }
+        if (linkedRoom && savedName && response.status === 403) {
+          const join = await fetch("/api/game", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "join", code: linkedRoom, playerKey: key, name: savedName, avatarColor: color }),
+          });
+          if (join.ok) {
+            const data = await join.json();
+            setRoom(data);
+            localStorage.setItem("zique_last_room", linkedRoom);
+            return;
+          }
+        }
+        if (!linkedRoom) localStorage.removeItem("zique_last_room");
+      } catch { setMessage("暂时没能找回上次的牌桌，可以重新输入房号"); }
+      finally { setRestoring(false); }
+    };
+    void restore();
   }, []);
 
   useEffect(() => {
@@ -67,14 +102,16 @@ export default function Home() {
     setBusy(true); setMessage("");
     try {
       localStorage.setItem("zique_name", name.trim() || "牌友");
+      localStorage.setItem("zique_avatar_color", avatarColor);
       const response = await fetch("/api/game", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, code: room?.code || joinCode, playerKey, name, ...extra }),
+        body: JSON.stringify({ action, code: room?.code || joinCode, playerKey, name, avatarColor, ...extra }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "操作没有成功");
       setRoom(data); setJoinCode(data.code); setSelected([]);
       if (action === "create" || action === "join") {
+        localStorage.setItem("zique_last_room", data.code);
         history.replaceState(null, "", `?room=${data.code}`);
       }
     } catch (caught) {
@@ -90,6 +127,12 @@ export default function Home() {
   const myTurn = room?.currentPlayerId === playerKey;
   const isHost = room?.hostId === playerKey;
 
+  const leaveToLobby = () => {
+    localStorage.removeItem("zique_last_room");
+    setRoom(null); setSelected([]); setMessage("");
+    history.replaceState(null, "", "/");
+  };
+
   const invite = async () => {
     if (!room) return;
     const url = `${window.location.origin}/?room=${room.code}`;
@@ -99,29 +142,33 @@ export default function Home() {
     } catch { /* 用户取消分享 */ }
   };
 
+  if (restoring && !room) {
+    return <main className="restore-screen"><span className="brand-mark">字</span><p>正在找回你的牌桌…</p></main>;
+  }
+
   if (!room) {
     return (
       <main className="landing-shell">
         <header className="landing-nav">
           <a className="brand" href="#"><span className="brand-mark">字</span><span><strong>字雀</strong><small>把话打到牌桌上</small></span></a>
-          {user ? <div className="signed-user">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span>{user.name.slice(0, 1)}</span>}<b>{user.name}</b></div> : (
-            <a className={`wechat-link ${!wechatConfigured ? "disabled" : ""}`} href={wechatConfigured ? "/api/auth/wechat/start" : undefined} aria-disabled={!wechatConfigured}>
-              <i>微</i>{wechatConfigured ? "微信扫码登录" : "微信登录待配置"}
-            </a>
-          )}
+          <div className="light-login"><span className={`profile-dot color-${avatarColor}`}>{name.trim().slice(0, 1) || "友"}</span><span><strong>免注册轻登录</strong><small>此设备会记住你</small></span></div>
         </header>
         <section className="hero">
           <div className="hero-copy">
             <p className="eyebrow">2—4 人 · 在线文字麻将</p>
             <h1>把一句话，<br /><em>打</em>到牌桌上。</h1>
             <p className="hero-intro">摸到什么字，就说什么话。没有标准答案，只有今晚最值得截图的那一句。</p>
-            {!user && <label className="name-field"><span>怎么称呼你</span><input value={name} onChange={(event) => setName(event.target.value.slice(0, 10))} placeholder="输入昵称" /></label>}
+            <div className="profile-fields">
+              <label className="name-field"><span>怎么称呼你</span><input value={name} onChange={(event) => setName(event.target.value.slice(0, 10))} placeholder="输入昵称" autoComplete="nickname" /></label>
+              <div className="color-picker" aria-label="选择头像颜色">{AVATAR_COLORS.map((item) => <button key={item.key} className={`color-swatch color-${item.key} ${avatarColor === item.key ? "active" : ""}`} onClick={() => setAvatarColor(item.key)} aria-label={item.label} aria-pressed={avatarColor === item.key} />)}</div>
+              <small className="profile-note">昵称和颜色只保存在这台设备；刷新、断线会自动回桌。</small>
+            </div>
             <div className="start-actions">
               <button className="create-room" onClick={() => callGame("create")} disabled={busy}>{busy ? "正在铺桌…" : "开一桌"}<span>→</span></button>
               <div className="join-room"><input inputMode="numeric" maxLength={4} value={joinCode} onChange={(event) => setJoinCode(event.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="输入 4 位房号" /><button onClick={() => callGame("join")} disabled={busy || joinCode.length !== 4}>入座</button></div>
             </div>
             {message && <p className="notice" role="status">{message}</p>}
-            <div className="trust-row"><span>免下载</span><span>房号邀请</span><span>手机电脑都能玩</span></div>
+            <div className="trust-row"><span>无需注册</span><span>不收手机号邮箱</span><span>自动找回牌桌</span></div>
           </div>
           <div className="hero-visual" aria-label="文字麻将示意">
             <div className="red-stamp">今夜<br />开局</div>
@@ -153,9 +200,9 @@ export default function Home() {
   return (
     <main className="game-shell">
       <header className="topbar">
-        <button className="brand brand-button" onClick={() => { setRoom(null); history.replaceState(null, "", "/"); }}><span className="brand-mark">字</span><span><strong>字雀</strong><small>把话打到牌桌上</small></span></button>
+        <button className="brand brand-button" onClick={leaveToLobby}><span className="brand-mark">字</span><span><strong>字雀</strong><small>把话打到牌桌上</small></span></button>
         <button className="room-chip room-button" onClick={invite}><span className="live-dot" />房间 {room.code} · {room.players.length}/4 人 · 点此邀请</button>
-        <button className="avatar" aria-label="个人菜单">{room.me?.name.slice(0, 1) || "友"}</button>
+        <button className={`avatar color-${avatarColor}`} aria-label="当前轻登录身份">{room.me?.name.slice(0, 1) || "友"}</button>
       </header>
       <section className="table-wrap" aria-label="文字麻将牌桌">
         {otherPlayers.map((player, index) => <Seat key={player.id} player={player} position={["top", "left", "right"][index] || "right"} active={player.id === room.currentPlayerId} />)}
@@ -187,7 +234,7 @@ export default function Home() {
 }
 
 function Seat({ player, position, active }: { player: PlayerView; position: string; active: boolean }) {
-  return <div className={`seat seat-${position} ${active ? "active-seat" : ""}`}>{player.avatarUrl ? <img className="seat-avatar" src={player.avatarUrl} alt="" /> : <span className="seat-avatar peach">{player.avatar}</span>}<span><strong>{player.name}</strong><small>{player.handCount} 张牌</small></span></div>;
+  return <div className={`seat seat-${position} ${active ? "active-seat" : ""}`}>{player.avatarUrl ? <img className="seat-avatar" src={player.avatarUrl} alt="" /> : <span className={`seat-avatar color-${player.avatarColor || "cinnabar"}`}>{player.avatar}</span>}<span><strong>{player.name}</strong><small>{player.handCount} 张牌</small></span></div>;
 }
 
 function Rules({ onClose }: { onClose: () => void }) {

@@ -1,11 +1,11 @@
 import { ensureDatabase, getD1 } from "../../../lib/database";
-import { getSignedInUser } from "../../../lib/auth";
 
 type Player = {
   id: string;
   name: string;
   avatar: string;
   avatarUrl: string | null;
+  avatarColor: string;
   hand: string[];
   seat: number;
 };
@@ -52,6 +52,11 @@ function cleanName(value: unknown) {
   return name || "神秘牌友";
 }
 
+const AVATAR_COLORS = new Set(["cinnabar", "jade", "ocean", "plum", "amber", "ink"]);
+function cleanAvatarColor(value: unknown) {
+  return typeof value === "string" && AVATAR_COLORS.has(value) ? value : "cinnabar";
+}
+
 function publicState(row: RoomRow, state: GameState, playerKey: string) {
   const me = state.players.find((player) => player.id === playerKey);
   return {
@@ -67,8 +72,8 @@ function publicState(row: RoomRow, state: GameState, playerKey: string) {
     deckCount: state.deck.length,
     discards: state.discards.slice(-40),
     log: state.log.slice(-5),
-    players: state.players.map(({ id, name, avatar, avatarUrl, hand, seat }) => ({
-      id, name, avatar, avatarUrl, handCount: hand.length, seat,
+    players: state.players.map(({ id, name, avatar, avatarUrl, avatarColor, hand, seat }) => ({
+      id, name, avatar, avatarUrl, avatarColor: avatarColor || "cinnabar", handCount: hand.length, seat,
     })),
     hand: me?.hand ?? [],
     me: me ? { id: me.id, name: me.name, seat: me.seat } : null,
@@ -113,15 +118,16 @@ export async function POST(request: Request) {
     code?: string;
     playerKey?: string;
     name?: string;
+    avatarColor?: string;
     tileIndex?: number;
     sentenceIndices?: number[];
   };
   const action = payload.action || "";
   const playerKey = (payload.playerKey || "").slice(0, 100);
   if (!playerKey) return error("无法识别你的设备，请刷新后重试");
-  const signedIn = await getSignedInUser(request);
-  const displayName = signedIn?.name || cleanName(payload.name);
+  const displayName = cleanName(payload.name);
   const avatar = displayName.slice(0, 1) || "友";
+  const avatarColor = cleanAvatarColor(payload.avatarColor);
 
   if (action === "create") {
     for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -130,7 +136,7 @@ export async function POST(request: Request) {
       const state: GameState = {
         status: "waiting",
         hostId: playerKey,
-        players: [{ id: playerKey, name: displayName, avatar, avatarUrl: signedIn?.avatarUrl || null, hand: [], seat: 0 }],
+        players: [{ id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], seat: 0 }],
         deck: [], discards: [], turn: 0, phase: "waiting", winnerId: null, winningSentence: null,
         log: [`${displayName} 开了牌桌`],
       };
@@ -157,13 +163,13 @@ export async function POST(request: Request) {
     if (!player) {
       if (state.status !== "waiting") return error("牌局已经开始了");
       if (state.players.length >= 4) return error("这个房间已经坐满了");
-      player = { id: playerKey, name: displayName, avatar, avatarUrl: signedIn?.avatarUrl || null, hand: [], seat: state.players.length };
+      player = { id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], seat: state.players.length };
       state.players.push(player);
       state.log.push(`${displayName} 入座了`);
     } else {
       player.name = displayName;
       player.avatar = avatar;
-      player.avatarUrl = signedIn?.avatarUrl || player.avatarUrl;
+      player.avatarColor = avatarColor;
     }
   } else {
     if (!player) return error("你还没有加入这个房间", 403);
