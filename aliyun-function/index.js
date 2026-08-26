@@ -75,6 +75,41 @@ function call(client, method, params) {
   });
 }
 
+let tableReadyPromise;
+
+function isTableMissing(error) {
+  const code = `${error?.code || ""} ${error?.message || ""}`;
+  return /OTSObjectNotExist|table.*not.*exist|Requested table does not exist/i.test(code);
+}
+
+function isTableAlreadyExists(error) {
+  const code = `${error?.code || ""} ${error?.message || ""}`;
+  return /OTSObjectAlreadyExist|table.*already.*exist/i.test(code);
+}
+
+async function ensureTable(client) {
+  const tableName = process.env.OTS_TABLE || "zique_rooms";
+  try {
+    await call(client, "describeTable", { tableName });
+    return;
+  } catch (error) {
+    if (!isTableMissing(error)) throw error;
+  }
+
+  try {
+    await call(client, "createTable", {
+      tableMeta: {
+        tableName,
+        primaryKey: [{ name: "code", type: "STRING" }],
+      },
+      reservedThroughput: { capacityUnit: { read: 0, write: 0 } },
+      tableOptions: { timeToLive: 30 * 24 * 60 * 60, maxVersions: 1 },
+    });
+  } catch (error) {
+    if (!isTableAlreadyExists(error)) throw error;
+  }
+}
+
 function longNumber(value) {
   return value && typeof value.toNumber === "function" ? value.toNumber() : Number(value || 0);
 }
@@ -169,6 +204,11 @@ async function handle(event, context) {
   if (!request.path.endsWith("/api/game")) return response(origin, 404, { error: "接口不存在" });
 
   const client = tableClient(context);
+  tableReadyPromise ||= ensureTable(client).catch((error) => {
+    tableReadyPromise = undefined;
+    throw error;
+  });
+  await tableReadyPromise;
   if (request.method === "GET") {
     const code = String(request.query.code || "").trim();
     const playerKey = String(request.query.playerKey || "").trim();

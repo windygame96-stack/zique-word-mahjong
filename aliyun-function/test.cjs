@@ -14,6 +14,14 @@ function columnsToObject(columns) {
 }
 
 TableStore.Client = class FakeClient {
+  describeTable(params, callback) {
+    callback(null, { tableMeta: { tableName: params.tableName } });
+  }
+
+  createTable(params, callback) {
+    callback(null, { tableMeta: params.tableMeta });
+  }
+
   getRow(params, callback) {
     const code = params.primaryKey[0].code;
     const row = rows.get(code);
