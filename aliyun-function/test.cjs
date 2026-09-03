@@ -90,7 +90,15 @@ test("两名玩家可以创建、加入并完成一局", async () => {
   assert.equal(drawn.json.phase, "discard");
   assert.equal(drawn.json.hand.length, 14);
 
-  const won = await invoke("POST", { body: { action: "win", code, playerKey: "p2", sentenceIndices: [0, 1, 2, 3] } });
+  const claimed = await invoke("POST", { body: { action: "win", code, playerKey: "p2", sentenceIndices: [0, 1, 2, 3] } });
+  assert.equal(claimed.json.status, "playing");
+  assert.equal(claimed.json.phase, "voting");
+  assert.equal(claimed.json.pendingWin.playerId, "p2");
+
+  const selfVote = await invoke("POST", { body: { action: "voteWin", code, playerKey: "p2", approve: true } });
+  assert.equal(selfVote.statusCode, 400);
+
+  const won = await invoke("POST", { body: { action: "voteWin", code, playerKey: "p1", approve: true } });
   assert.equal(won.json.status, "finished");
   assert.equal(won.json.winnerId, "p2");
   assert.equal(won.json.winningSentence.length, 4);

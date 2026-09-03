@@ -17,9 +17,10 @@ type GameState = {
   deck: string[];
   discards: string[];
   turn: number;
-  phase: "waiting" | "draw" | "discard" | "finished";
+  phase: "waiting" | "draw" | "discard" | "voting" | "finished";
   winnerId: string | null;
   winningSentence: string | null;
+  pendingWin: { playerId: string; sentence: string; votes: Record<string, "approve" | "reject"> } | null;
   log: string[];
 };
 
@@ -59,6 +60,15 @@ function cleanAvatarColor(value: unknown) {
 
 function publicState(row: RoomRow, state: GameState, playerKey: string) {
   const me = state.players.find((player) => player.id === playerKey);
+  const pendingWin = state.pendingWin ? {
+    playerId: state.pendingWin.playerId,
+    sentence: state.pendingWin.sentence,
+    approvals: Object.values(state.pendingWin.votes).filter((vote) => vote === "approve").length,
+    rejections: Object.values(state.pendingWin.votes).filter((vote) => vote === "reject").length,
+    votesCast: Object.keys(state.pendingWin.votes).length,
+    totalVoters: Math.max(0, state.players.length - 1),
+    myVote: state.pendingWin.votes[playerKey] || null,
+  } : null;
   return {
     code: row.code,
     revision: row.revision,
@@ -69,6 +79,7 @@ function publicState(row: RoomRow, state: GameState, playerKey: string) {
     hostId: state.hostId,
     winnerId: state.winnerId,
     winningSentence: state.winningSentence,
+    pendingWin,
     deckCount: state.deck.length,
     discards: state.discards.slice(-40),
     log: state.log.slice(-5),
@@ -121,6 +132,7 @@ export async function POST(request: Request) {
     avatarColor?: string;
     tileIndex?: number;
     sentenceIndices?: number[];
+    approve?: boolean;
   };
   const action = payload.action || "";
   const playerKey = (payload.playerKey || "").slice(0, 100);
@@ -137,7 +149,7 @@ export async function POST(request: Request) {
         status: "waiting",
         hostId: playerKey,
         players: [{ id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], seat: 0 }],
-        deck: [], discards: [], turn: 0, phase: "waiting", winnerId: null, winningSentence: null,
+        deck: [], discards: [], turn: 0, phase: "waiting", winnerId: null, winningSentence: null, pendingWin: null,
         log: [`${displayName} 开了牌桌`],
       };
       try {
@@ -186,6 +198,7 @@ export async function POST(request: Request) {
       state.status = "playing";
       state.winnerId = null;
       state.winningSentence = null;
+      state.pendingWin = null;
       state.log = ["牌局开始，房主先出牌"];
     } else if (action === "draw") {
       if (state.status !== "playing" || state.players[state.turn]?.id !== playerKey || state.phase !== "draw") return error("现在还不能摸牌");
@@ -212,11 +225,32 @@ export async function POST(request: Request) {
       if (indices.length < 4 || new Set(indices).size !== indices.length) return error("至少选四张不同的字牌组成一句话");
       if (indices.some((index) => !Number.isInteger(index) || index < 0 || index >= player.hand.length)) return error("句子里有无效的牌");
       const sentence = indices.map((index) => player!.hand[index]).join("");
-      state.status = "finished";
-      state.phase = "finished";
-      state.winnerId = playerKey;
-      state.winningSentence = sentence;
-      state.log.push(`${player.name} 用「${sentence}」胡了`);
+      state.phase = "voting";
+      state.pendingWin = { playerId: playerKey, sentence, votes: {} };
+      state.log.push(`${player.name} 用「${sentence}」申请胡牌，等待牌友判定`);
+    } else if (action === "voteWin") {
+      if (state.status !== "playing" || state.phase !== "voting" || !state.pendingWin) return error("现在没有待判定的胡牌");
+      if (state.pendingWin.playerId === playerKey) return error("不能判定自己的胡牌");
+      if (state.pendingWin.votes[playerKey]) return error("你已经投过票了");
+      if (typeof payload.approve !== "boolean") return error("请选择算胡或不算胡");
+      state.pendingWin.votes[playerKey] = payload.approve ? "approve" : "reject";
+      const voters = state.players.filter((item) => item.id !== state.pendingWin!.playerId);
+      const votes = Object.values(state.pendingWin.votes);
+      if (votes.length === voters.length) {
+        const approvals = votes.filter((vote) => vote === "approve").length;
+        const claimant = state.players.find((item) => item.id === state.pendingWin!.playerId);
+        const sentence = state.pendingWin.sentence;
+        if (approvals > voters.length / 2) {
+          state.status = "finished"; state.phase = "finished"; state.winnerId = state.pendingWin.playerId; state.winningSentence = sentence;
+          state.log.push(`牌友判定通过，${claimant?.name || "牌友"} 用「${sentence}」胡了`);
+        } else {
+          state.phase = "discard";
+          state.log.push(`牌友判定未通过，「${sentence}」不算胡`);
+        }
+        state.pendingWin = null;
+      } else {
+        state.log.push(`${player.name} 已完成胡牌判定`);
+      }
     } else {
       return error("未知操作");
     }
