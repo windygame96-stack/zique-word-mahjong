@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 
 type AvatarColor = "cinnabar" | "jade" | "ocean" | "plum" | "amber" | "ink";
 type PlayerView = { id: string; name: string; avatar: string; avatarColor: AvatarColor; avatarUrl: string | null; handCount: number; seat: number };
@@ -42,6 +43,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [avatarColor, setAvatarColor] = useState<AvatarColor>("cinnabar");
   const [restoring, setRestoring] = useState(true);
 
@@ -140,14 +142,7 @@ export default function Home() {
     history.replaceState(null, "", "/");
   };
 
-  const invite = async () => {
-    if (!room) return;
-    const url = `${window.location.origin}/?room=${room.code}`;
-    try {
-      if (navigator.share) await navigator.share({ title: "来字雀打文字麻将", text: `房号 ${room.code}，等你入座`, url });
-      else { await navigator.clipboard.writeText(url); setMessage("邀请链接已复制"); }
-    } catch { /* 用户取消分享 */ }
-  };
+  const invite = () => { if (room) setShareOpen(true); };
 
   if (restoring && !room) {
     return <main className="restore-screen"><span className="brand-mark">字</span><p>正在找回你的牌桌…</p></main>;
@@ -183,7 +178,7 @@ export default function Home() {
             <p>一句离谱的话<br />通常从一张好牌开始</p>
           </div>
         </section>
-        <footer className="landing-footer"><span>原创在线字牌游戏</span><button onClick={() => setRulesOpen(true)}>先看玩法</button></footer>
+        <footer className="landing-footer"><span>玩法借鉴《白色失明文字麻将》 · 非官方线上版本</span><button onClick={() => setRulesOpen(true)}>先看玩法</button></footer>
         {rulesOpen && <Rules onClose={() => setRulesOpen(false)} />}
       </main>
     );
@@ -236,8 +231,47 @@ export default function Home() {
       {message && <div className="game-toast" role="status">{message}<button onClick={() => setMessage("")}>×</button></div>}
       <nav className="action-bar" aria-label="牌局操作"><button onClick={() => setRulesOpen(true)}>规则</button><button className="secondary" onClick={invite}>邀请朋友</button><button className="primary" onClick={primary} disabled={primaryDisabled}>{primaryLabel}</button></nav>
       {rulesOpen && <Rules onClose={() => setRulesOpen(false)} />}
+      {shareOpen && <ShareRoom code={room.code} onClose={() => setShareOpen(false)} onNotice={setMessage} />}
     </main>
   );
+}
+
+function ShareRoom({ code, onClose, onNotice }: { code: string; onClose: () => void; onNotice: (message: string) => void }) {
+  const url = typeof window === "undefined" ? "" : (() => {
+    const target = new URL(window.location.href);
+    target.search = "";
+    target.hash = "";
+    target.searchParams.set("room", code);
+    return target.toString();
+  })();
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      onNotice("邀请链接已复制");
+      onClose();
+    } catch { onNotice("复制失败，可以让朋友直接扫码"); }
+  };
+
+  const systemShare = async () => {
+    try { await navigator.share({ title: "来字雀打文字麻将", text: `房号 ${code}，等你入座`, url }); }
+    catch { /* 用户取消分享 */ }
+  };
+
+  return <div className="modal-backdrop">
+    <section className="share-card" role="dialog" aria-modal="true" aria-label="分享房间二维码">
+      <button className="modal-close" onClick={onClose}>×</button>
+      <p className="eyebrow">邀请牌友</p>
+      <h2>扫码入座</h2>
+      <p className="share-room-code">房间 <strong>{code}</strong></p>
+      <div className="qr-frame"><QRCodeSVG value={url} size={220} level="M" marginSize={4} bgColor="#fffaf0" fgColor="#24231f" title={`字雀房间 ${code} 邀请二维码`} /></div>
+      <p className="share-tip">朋友扫码即可打开游戏并自动填写房号</p>
+      <div className="share-actions">
+        <button className="copy-share" onClick={copyLink}>复制邀请链接</button>
+        {typeof navigator !== "undefined" && navigator.share && <button className="native-share" onClick={systemShare}>更多分享</button>}
+      </div>
+    </section>
+  </div>;
 }
 
 function Seat({ player, position, active }: { player: PlayerView; position: string; active: boolean }) {
