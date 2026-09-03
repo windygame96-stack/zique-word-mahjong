@@ -45,6 +45,7 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [rulesOpen, setRulesOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [dissolveOpen, setDissolveOpen] = useState(false);
   const [avatarColor, setAvatarColor] = useState<AvatarColor>("cinnabar");
   const [restoring, setRestoring] = useState(true);
 
@@ -96,13 +97,22 @@ export default function Home() {
 
   useEffect(() => {
     if (!room || !playerKey) return;
+    let cancelled = false;
     const timer = window.setInterval(async () => {
       try {
         const response = await fetch(gameApi(`/api/game?code=${room.code}&playerKey=${encodeURIComponent(playerKey)}`), { cache: "no-store" });
+        if (cancelled) return;
         if (response.ok) setRoom(await response.json());
+        else if (response.status === 404) {
+          localStorage.removeItem("zique_last_room");
+          setRoom(null);
+          setSelected([]);
+          setMessage("房主已解散房间");
+          history.replaceState(null, "", "/");
+        }
       } catch { /* 下一轮自动重试 */ }
     }, 1400);
-    return () => window.clearInterval(timer);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [room?.code, playerKey]);
 
   useEffect(() => { setSelected([]); }, [room?.currentPlayerId, room?.phase, room?.revision]);
@@ -119,6 +129,14 @@ export default function Home() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "操作没有成功");
+      if (action === "dissolve") {
+        localStorage.removeItem("zique_last_room");
+        setDissolveOpen(false);
+        setRoom(null); setSelected([]); setJoinCode("");
+        setMessage("房间已解散");
+        history.replaceState(null, "", "/");
+        return;
+      }
       setRoom(data); setJoinCode(data.code); setSelected([]);
       if (action === "create" || action === "join") {
         localStorage.setItem("zique_last_room", data.code);
@@ -241,11 +259,26 @@ export default function Home() {
         </div>
       </section>
       {message && <div className="game-toast" role="status">{message}<button onClick={() => setMessage("")}>×</button></div>}
-      <nav className="action-bar" aria-label="牌局操作"><button onClick={() => setRulesOpen(true)}>规则</button><button className="secondary" onClick={invite}>邀请朋友</button><button className="primary" onClick={primary} disabled={primaryDisabled}>{primaryLabel}</button></nav>
+      <nav className={`action-bar ${isHost ? "host-actions" : ""}`} aria-label="牌局操作"><button onClick={() => setRulesOpen(true)}>规则</button><button className="secondary" onClick={invite}>邀请朋友</button>{isHost && <button className="danger" onClick={() => setDissolveOpen(true)}>解散房间</button>}<button className="primary" onClick={primary} disabled={primaryDisabled}>{primaryLabel}</button></nav>
       {rulesOpen && <Rules onClose={() => setRulesOpen(false)} />}
       {shareOpen && <ShareRoom code={room.code} onClose={() => setShareOpen(false)} onNotice={setMessage} />}
+      {dissolveOpen && <ConfirmDissolve busy={busy} onCancel={() => setDissolveOpen(false)} onConfirm={() => callGame("dissolve")} />}
     </main>
   );
+}
+
+function ConfirmDissolve({ busy, onCancel, onConfirm }: { busy: boolean; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onCancel(); }}>
+    <section className="confirm-card" role="alertdialog" aria-modal="true" aria-label="确认解散房间">
+      <p className="eyebrow">房主操作</p>
+      <h2>确定解散房间？</h2>
+      <p>所有牌友会立即离开牌桌，这一局无法恢复。</p>
+      <div className="confirm-actions">
+        <button onClick={onCancel} disabled={busy}>先不解散</button>
+        <button className="confirm-danger" onClick={onConfirm} disabled={busy}>{busy ? "正在解散…" : "确认解散"}</button>
+      </div>
+    </section>
+  </div>;
 }
 
 function ShareRoom({ code, onClose, onNotice }: { code: string; onClose: () => void; onNotice: (message: string) => void }) {

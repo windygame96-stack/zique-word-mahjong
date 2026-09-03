@@ -44,6 +44,13 @@ TableStore.Client = class FakeClient {
     rows.set(code, { ...rows.get(code), ...updates });
     callback(null, {});
   }
+
+  deleteRow(params, callback) {
+    const code = params.primaryKey[0].code;
+    if (!rows.has(code)) return callback(Object.assign(new Error("condition check failed"), { code: "OTSConditionCheckFail" }));
+    rows.delete(code);
+    callback(null, {});
+  }
 };
 
 process.env.OTS_ENDPOINT = "https://example.invalid";
@@ -102,4 +109,14 @@ test("两名玩家可以创建、加入并完成一局", async () => {
   assert.equal(won.json.status, "finished");
   assert.equal(won.json.winnerId, "p2");
   assert.equal(won.json.winningSentence.length, 4);
+
+  const unauthorized = await invoke("POST", { body: { action: "dissolve", code, playerKey: "p2" } });
+  assert.equal(unauthorized.statusCode, 403);
+
+  const dissolved = await invoke("POST", { body: { action: "dissolve", code, playerKey: "p1" } });
+  assert.equal(dissolved.statusCode, 200);
+  assert.equal(dissolved.json.dissolved, true);
+
+  const missing = await invoke("GET", { query: { code, playerKey: "p1" } });
+  assert.equal(missing.statusCode, 404);
 });

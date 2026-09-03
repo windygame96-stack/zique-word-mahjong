@@ -173,6 +173,20 @@ async function saveRoom(client, row, state) {
   });
 }
 
+async function deleteRoom(client, row) {
+  const revisionCondition = new TableStore.SingleColumnCondition(
+    "revision",
+    TableStore.Long.fromNumber(row.revision),
+    TableStore.ComparatorType.EQUAL,
+  );
+  revisionCondition.passIfMissing = false;
+  await call(client, "deleteRow", {
+    tableName: process.env.OTS_TABLE || "zique_rooms",
+    primaryKey: [{ code: row.code }],
+    condition: new TableStore.Condition(TableStore.RowExistenceExpectation.EXPECT_EXIST, revisionCondition),
+  });
+}
+
 function requestFromEvent(event) {
   const raw = Buffer.isBuffer(event) ? event.toString("utf8") : event;
   const parsed = typeof raw === "string" ? JSON.parse(raw || "{}") : (raw || {});
@@ -281,7 +295,15 @@ async function handle(event, context) {
     }
   } else {
     if (!player) return response(origin, 403, { error: "你还没有加入这个房间" });
-    if (action === "start" || action === "restart") {
+    if (action === "dissolve") {
+      if (state.hostId !== playerKey) return response(origin, 403, { error: "只有房主可以解散房间" });
+      try { await deleteRoom(client, row); }
+      catch (error) {
+        if (isConditionConflict(error)) return response(origin, 409, { error: "牌桌状态刚刚变化，请再试一次" });
+        throw error;
+      }
+      return response(origin, 200, { dissolved: true, code });
+    } else if (action === "start" || action === "restart") {
       if (state.hostId !== playerKey) return response(origin, 400, { error: "只有房主可以开局" });
       if (state.players.length < 2) return response(origin, 400, { error: "至少要有两个人才能开局" });
       const deck = makeDeck();

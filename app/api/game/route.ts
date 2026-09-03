@@ -105,6 +105,13 @@ async function saveRoom(row: RoomRow, state: GameState) {
   return Number(result.meta.changes || 0) === 1;
 }
 
+async function deleteRoom(row: RoomRow) {
+  const result = await getD1().prepare(
+    "DELETE FROM rooms WHERE code = ? AND revision = ?",
+  ).bind(row.code, row.revision).run();
+  return Number(result.meta.changes || 0) === 1;
+}
+
 function error(message: string, status = 400) {
   return Response.json({ error: message }, { status });
 }
@@ -185,7 +192,12 @@ export async function POST(request: Request) {
     }
   } else {
     if (!player) return error("你还没有加入这个房间", 403);
-    if (action === "start" || action === "restart") {
+    if (action === "dissolve") {
+      if (state.hostId !== playerKey) return error("只有房主可以解散房间", 403);
+      const deleted = await deleteRoom(row);
+      if (!deleted) return error("牌桌状态刚刚变化，请再试一次", 409);
+      return Response.json({ dissolved: true, code });
+    } else if (action === "start" || action === "restart") {
       if (state.hostId !== playerKey) return error("只有房主可以开局");
       if (state.players.length < 2) return error("至少要有两个人才能开局");
       const deck = makeDeck();
