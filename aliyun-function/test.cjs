@@ -45,12 +45,6 @@ TableStore.Client = class FakeClient {
     callback(null, {});
   }
 
-  deleteRow(params, callback) {
-    const code = params.primaryKey[0].code;
-    if (!rows.has(code)) return callback(Object.assign(new Error("condition check failed"), { code: "OTSConditionCheckFail" }));
-    rows.delete(code);
-    callback(null, {});
-  }
 };
 
 process.env.OTS_ENDPOINT = "https://example.invalid";

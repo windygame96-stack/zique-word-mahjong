@@ -11,7 +11,7 @@ type Player = {
 };
 
 type GameState = {
-  status: "waiting" | "playing" | "finished";
+  status: "waiting" | "playing" | "finished" | "dissolved";
   hostId: string;
   players: Player[];
   deck: string[];
@@ -105,13 +105,6 @@ async function saveRoom(row: RoomRow, state: GameState) {
   return Number(result.meta.changes || 0) === 1;
 }
 
-async function deleteRoom(row: RoomRow) {
-  const result = await getD1().prepare(
-    "DELETE FROM rooms WHERE code = ? AND revision = ?",
-  ).bind(row.code, row.revision).run();
-  return Number(result.meta.changes || 0) === 1;
-}
-
 function error(message: string, status = 400) {
   return Response.json({ error: message }, { status });
 }
@@ -125,6 +118,7 @@ export async function GET(request: Request) {
   const row = await readRoom(code);
   if (!row) return error("没找到这个房间", 404);
   const state = JSON.parse(row.state_json) as GameState;
+  if (state.status === "dissolved") return error("房间已解散", 404);
   if (!state.players.some((player) => player.id === playerKey)) return error("你还没有加入这个房间", 403);
   return Response.json(publicState(row, state, playerKey));
 }
@@ -176,6 +170,7 @@ export async function POST(request: Request) {
   const row = await readRoom(code);
   if (!row) return error("没找到这个房间", 404);
   const state = JSON.parse(row.state_json) as GameState;
+  if (state.status === "dissolved") return error("房间已解散", 404);
   let player = state.players.find((item) => item.id === playerKey);
 
   if (action === "join") {
@@ -194,8 +189,12 @@ export async function POST(request: Request) {
     if (!player) return error("你还没有加入这个房间", 403);
     if (action === "dissolve") {
       if (state.hostId !== playerKey) return error("只有房主可以解散房间", 403);
-      const deleted = await deleteRoom(row);
-      if (!deleted) return error("牌桌状态刚刚变化，请再试一次", 409);
+      state.status = "dissolved";
+      state.phase = "finished";
+      state.pendingWin = null;
+      state.log.push(`${player.name} 解散了房间`);
+      const saved = await saveRoom(row, state);
+      if (!saved) return error("牌桌状态刚刚变化，请再试一次", 409);
       return Response.json({ dissolved: true, code });
     } else if (action === "start" || action === "restart") {
       if (state.hostId !== playerKey) return error("只有房主可以开局");

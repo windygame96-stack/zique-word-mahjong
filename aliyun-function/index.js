@@ -173,20 +173,6 @@ async function saveRoom(client, row, state) {
   });
 }
 
-async function deleteRoom(client, row) {
-  const revisionCondition = new TableStore.SingleColumnCondition(
-    "revision",
-    TableStore.Long.fromNumber(row.revision),
-    TableStore.ComparatorType.EQUAL,
-  );
-  revisionCondition.passIfMissing = false;
-  await call(client, "deleteRow", {
-    tableName: process.env.OTS_TABLE || "zique_rooms",
-    primaryKey: [{ code: row.code }],
-    condition: new TableStore.Condition(TableStore.RowExistenceExpectation.EXPECT_EXIST, revisionCondition),
-  });
-}
-
 function requestFromEvent(event) {
   const raw = Buffer.isBuffer(event) ? event.toString("utf8") : event;
   const parsed = typeof raw === "string" ? JSON.parse(raw || "{}") : (raw || {});
@@ -240,6 +226,7 @@ async function handle(event, context) {
     const row = await readRoom(client, code);
     if (!row) return response(origin, 404, { error: "没找到这个房间" });
     const state = JSON.parse(row.state_json);
+    if (state.status === "dissolved") return response(origin, 404, { error: "房间已解散" });
     if (!state.players.some((player) => player.id === playerKey)) return response(origin, 403, { error: "你还没有加入这个房间" });
     return response(origin, 200, publicState(row, state, playerKey));
   }
@@ -279,6 +266,7 @@ async function handle(event, context) {
   const row = await readRoom(client, code);
   if (!row) return response(origin, 404, { error: "没找到这个房间" });
   const state = JSON.parse(row.state_json);
+  if (state.status === "dissolved") return response(origin, 404, { error: "房间已解散" });
   let player = state.players.find((item) => item.id === playerKey);
 
   if (action === "join") {
@@ -297,7 +285,11 @@ async function handle(event, context) {
     if (!player) return response(origin, 403, { error: "你还没有加入这个房间" });
     if (action === "dissolve") {
       if (state.hostId !== playerKey) return response(origin, 403, { error: "只有房主可以解散房间" });
-      try { await deleteRoom(client, row); }
+      state.status = "dissolved";
+      state.phase = "finished";
+      state.pendingWin = null;
+      state.log.push(`${player.name} 解散了房间`);
+      try { await saveRoom(client, row, state); }
       catch (error) {
         if (isConditionConflict(error)) return response(origin, 409, { error: "牌桌状态刚刚变化，请再试一次" });
         throw error;
