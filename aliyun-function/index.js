@@ -2,14 +2,15 @@
 
 const TableStore = require("tablestore");
 
-const WORDS = Array.from(
-  "我你他她它们今天明天昨天春夏秋冬风雨云雪花月山海星河光夜梦爱想要会能在去来把被让和与可是如果因为所以依然突然偷偷慢慢一起故事世界朋友时间生活快乐自由温柔勇敢浪漫认真可爱有趣等待遇见告别开始结束看见听见相信喜欢变成一只小猫宇宙答案问题喝茶散步发呆唱歌晚安早安真的假的大概也许永远此刻这里那里",
-);
+const TILE_GROUPS = [
+  { copies: 3, chars: ["我", "你", "他", "她", "们", "的", "了", "是", "不", "很", "也", "都", "就", "还", "想", "要", "会", "能", "有", "在", "去", "来", "爱", "好"] },
+  { copies: 2, chars: ["看", "听", "说", "吃", "喝", "玩", "做", "给", "让", "把", "和", "跟", "喜", "欢", "真", "太", "更", "又", "正", "可", "以", "一", "起", "家"] },
+  { copies: 1, chars: ["今", "天", "明", "晚", "早", "夜", "回", "到", "见", "走", "睡", "快", "慢", "风", "雨", "花", "月", "猫", "茶", "饭", "朋", "友", "心", "开"] },
+];
 const AVATAR_COLORS = new Set(["cinnabar", "jade", "ocean", "plum", "amber", "ink"]);
 
 function makeDeck() {
-  const deck = [];
-  for (let index = 0; index < 144; index += 1) deck.push(WORDS[index % WORDS.length]);
+  const deck = TILE_GROUPS.flatMap(({ copies, chars }) => Array.from({ length: copies }, () => chars).flat());
   for (let index = deck.length - 1; index > 0; index -= 1) {
     const next = Math.floor(Math.random() * (index + 1));
     [deck[index], deck[next]] = [deck[next], deck[index]];
@@ -52,6 +53,7 @@ function publicState(row, state, playerKey) {
     winnerId: state.winnerId,
     winningSentence: state.winningSentence,
     pendingWin,
+    lastDiscard: state.lastDiscard || null,
     deckCount: state.deck.length,
     discards: state.discards.slice(-40),
     log: state.log.slice(-5),
@@ -249,7 +251,7 @@ async function handle(event, context) {
       const state = {
         status: "waiting", hostId: playerKey,
         players: [{ id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], seat: 0 }],
-        deck: [], discards: [], turn: 0, phase: "waiting", winnerId: null, winningSentence: null, pendingWin: null,
+        deck: [], discards: [], lastDiscard: null, turn: 0, phase: "waiting", winnerId: null, winningSentence: null, pendingWin: null,
         log: [`${displayName} 开了牌桌`],
       };
       try {
@@ -283,7 +285,12 @@ async function handle(event, context) {
     }
   } else {
     if (!player) return response(origin, 403, { error: "你还没有加入这个房间" });
-    if (action === "dissolve") {
+    if (action === "rename") {
+      player.name = displayName;
+      player.avatar = avatar;
+      player.avatarColor = avatarColor;
+      state.log.push(`${displayName} 改好了名字`);
+    } else if (action === "dissolve") {
       if (state.hostId !== playerKey) return response(origin, 403, { error: "只有房主可以解散房间" });
       state.status = "dissolved";
       state.phase = "finished";
@@ -301,10 +308,11 @@ async function handle(event, context) {
       const deck = makeDeck();
       state.players.forEach((item) => { item.hand = deck.splice(0, 13); });
       state.players[0].hand.push(deck.pop());
-      state.deck = deck; state.discards = []; state.turn = 0; state.phase = "discard"; state.status = "playing";
+      state.deck = deck; state.discards = []; state.lastDiscard = null; state.turn = 0; state.phase = "discard"; state.status = "playing";
       state.winnerId = null; state.winningSentence = null; state.pendingWin = null; state.log = ["牌局开始，房主先出牌"];
     } else if (action === "draw") {
-      if (state.status !== "playing" || state.players[state.turn]?.id !== playerKey || state.phase !== "draw") return response(origin, 400, { error: "现在还不能摸牌" });
+      if (state.status !== "playing" || state.players[state.turn]?.id !== playerKey || !["draw", "claim"].includes(state.phase)) return response(origin, 400, { error: "现在还不能摸牌" });
+      state.lastDiscard = null;
       const tile = state.deck.pop();
       if (!tile) { state.status = "finished"; state.phase = "finished"; state.log.push("牌山见底，这局流局"); }
       else { player.hand.push(tile); state.phase = "discard"; state.log.push(`${player.name} 摸了一张牌`); }
@@ -313,8 +321,19 @@ async function handle(event, context) {
       const tileIndex = Number(payload.tileIndex);
       if (!Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= player.hand.length) return response(origin, 400, { error: "请选择一张有效的牌" });
       const [tile] = player.hand.splice(tileIndex, 1);
-      state.discards.push(tile); state.log.push(`${player.name} 打出了「${tile}」`);
-      state.turn = (state.turn + 1) % state.players.length; state.phase = "draw";
+      state.discards.push(tile); state.lastDiscard = { tile, playerId: playerKey }; state.log.push(`${player.name} 打出了「${tile}」，等待牌友吃牌`);
+      state.turn = (state.turn + 1) % state.players.length; state.phase = "claim";
+    } else if (action === "eat") {
+      if (state.status !== "playing" || state.phase !== "claim" || !state.lastDiscard) return response(origin, 400, { error: "现在没有可以吃的牌" });
+      if (state.lastDiscard.playerId === playerKey) return response(origin, 400, { error: "不能吃自己打出的牌" });
+      const tile = state.lastDiscard.tile;
+      if (state.discards.at(-1) !== tile) return response(origin, 409, { error: "这张牌已经不能吃了" });
+      state.discards.pop();
+      player.hand.push(tile);
+      state.turn = state.players.findIndex((item) => item.id === playerKey);
+      state.phase = "discard";
+      state.lastDiscard = null;
+      state.log.push(`${player.name} 吃了「${tile}」，本轮直接出牌`);
     } else if (action === "win") {
       if (state.status !== "playing" || state.players[state.turn]?.id !== playerKey || state.phase !== "discard") return response(origin, 400, { error: "只有轮到你、摸牌后才能胡" });
       const indices = Array.isArray(payload.sentenceIndices) ? payload.sentenceIndices : [];

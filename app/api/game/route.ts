@@ -16,8 +16,9 @@ type GameState = {
   players: Player[];
   deck: string[];
   discards: string[];
+  lastDiscard: { tile: string; playerId: string } | null;
   turn: number;
-  phase: "waiting" | "draw" | "discard" | "voting" | "finished";
+  phase: "waiting" | "draw" | "claim" | "discard" | "voting" | "finished";
   winnerId: string | null;
   winningSentence: string | null;
   pendingWin: { playerId: string; sentence: string; votes: Record<string, "approve" | "reject"> } | null;
@@ -26,13 +27,14 @@ type GameState = {
 
 type RoomRow = { code: string; state_json: string; revision: number };
 
-const WORDS = Array.from(
-  "我你他她它们今天明天昨天春夏秋冬风雨云雪花月山海星河光夜梦爱想要会能在去来把被让和与可是如果因为所以依然突然偷偷慢慢一起故事世界朋友时间生活快乐自由温柔勇敢浪漫认真可爱有趣等待遇见告别开始结束看见听见相信喜欢变成一只小猫宇宙答案问题喝茶散步发呆唱歌晚安早安真的假的大概也许永远此刻这里那里",
-);
+const TILE_GROUPS = [
+  { copies: 3, chars: ["我", "你", "他", "她", "们", "的", "了", "是", "不", "很", "也", "都", "就", "还", "想", "要", "会", "能", "有", "在", "去", "来", "爱", "好"] },
+  { copies: 2, chars: ["看", "听", "说", "吃", "喝", "玩", "做", "给", "让", "把", "和", "跟", "喜", "欢", "真", "太", "更", "又", "正", "可", "以", "一", "起", "家"] },
+  { copies: 1, chars: ["今", "天", "明", "晚", "早", "夜", "回", "到", "见", "走", "睡", "快", "慢", "风", "雨", "花", "月", "猫", "茶", "饭", "朋", "友", "心", "开"] },
+];
 
 function makeDeck() {
-  const deck: string[] = [];
-  for (let index = 0; index < 144; index += 1) deck.push(WORDS[index % WORDS.length]);
+  const deck = TILE_GROUPS.flatMap(({ copies, chars }) => Array.from({ length: copies }, () => chars).flat());
   for (let index = deck.length - 1; index > 0; index -= 1) {
     const random = new Uint32Array(1);
     crypto.getRandomValues(random);
@@ -80,6 +82,7 @@ function publicState(row: RoomRow, state: GameState, playerKey: string) {
     winnerId: state.winnerId,
     winningSentence: state.winningSentence,
     pendingWin,
+    lastDiscard: state.lastDiscard || null,
     deckCount: state.deck.length,
     discards: state.discards.slice(-40),
     log: state.log.slice(-5),
@@ -150,7 +153,7 @@ export async function POST(request: Request) {
         status: "waiting",
         hostId: playerKey,
         players: [{ id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], seat: 0 }],
-        deck: [], discards: [], turn: 0, phase: "waiting", winnerId: null, winningSentence: null, pendingWin: null,
+        deck: [], discards: [], lastDiscard: null, turn: 0, phase: "waiting", winnerId: null, winningSentence: null, pendingWin: null,
         log: [`${displayName} 开了牌桌`],
       };
       try {
@@ -187,7 +190,12 @@ export async function POST(request: Request) {
     }
   } else {
     if (!player) return error("你还没有加入这个房间", 403);
-    if (action === "dissolve") {
+    if (action === "rename") {
+      player.name = displayName;
+      player.avatar = avatar;
+      player.avatarColor = avatarColor;
+      state.log.push(`${displayName} 改好了名字`);
+    } else if (action === "dissolve") {
       if (state.hostId !== playerKey) return error("只有房主可以解散房间", 403);
       state.status = "dissolved";
       state.phase = "finished";
@@ -204,6 +212,7 @@ export async function POST(request: Request) {
       state.players[0].hand.push(deck.pop()!);
       state.deck = deck;
       state.discards = [];
+      state.lastDiscard = null;
       state.turn = 0;
       state.phase = "discard";
       state.status = "playing";
@@ -212,7 +221,8 @@ export async function POST(request: Request) {
       state.pendingWin = null;
       state.log = ["牌局开始，房主先出牌"];
     } else if (action === "draw") {
-      if (state.status !== "playing" || state.players[state.turn]?.id !== playerKey || state.phase !== "draw") return error("现在还不能摸牌");
+      if (state.status !== "playing" || state.players[state.turn]?.id !== playerKey || !["draw", "claim"].includes(state.phase)) return error("现在还不能摸牌");
+      state.lastDiscard = null;
       const tile = state.deck.pop();
       if (!tile) {
         state.status = "finished"; state.phase = "finished"; state.log.push("牌山见底，这局流局");
@@ -227,9 +237,21 @@ export async function POST(request: Request) {
       if (!Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= player.hand.length) return error("请选择一张有效的牌");
       const [tile] = player.hand.splice(tileIndex, 1);
       state.discards.push(tile);
-      state.log.push(`${player.name} 打出了「${tile}」`);
+      state.lastDiscard = { tile, playerId: playerKey };
+      state.log.push(`${player.name} 打出了「${tile}」，等待牌友吃牌`);
       state.turn = (state.turn + 1) % state.players.length;
-      state.phase = "draw";
+      state.phase = "claim";
+    } else if (action === "eat") {
+      if (state.status !== "playing" || state.phase !== "claim" || !state.lastDiscard) return error("现在没有可以吃的牌");
+      if (state.lastDiscard.playerId === playerKey) return error("不能吃自己打出的牌");
+      const tile = state.lastDiscard.tile;
+      if (state.discards.at(-1) !== tile) return error("这张牌已经不能吃了", 409);
+      state.discards.pop();
+      player.hand.push(tile);
+      state.turn = state.players.findIndex((item) => item.id === playerKey);
+      state.phase = "discard";
+      state.lastDiscard = null;
+      state.log.push(`${player.name} 吃了「${tile}」，本轮直接出牌`);
     } else if (action === "win") {
       if (state.status !== "playing" || state.players[state.turn]?.id !== playerKey || state.phase !== "discard") return error("只有轮到你、摸牌后才能胡");
       const indices = Array.isArray(payload.sentenceIndices) ? payload.sentenceIndices : [];

@@ -7,9 +7,10 @@ type AvatarColor = "cinnabar" | "jade" | "ocean" | "plum" | "amber" | "ink";
 type PlayerView = { id: string; name: string; avatar: string; avatarColor: AvatarColor; avatarUrl: string | null; handCount: number; seat: number };
 type RoomView = {
   code: string; revision: number; status: "waiting" | "playing" | "finished";
-  phase: "waiting" | "draw" | "discard" | "voting" | "finished"; turn: number; currentPlayerId: string | null;
+  phase: "waiting" | "draw" | "claim" | "discard" | "voting" | "finished"; turn: number; currentPlayerId: string | null;
   hostId: string; winnerId: string | null; winningSentence: string | null; deckCount: number;
   pendingWin: { playerId: string; sentence: string; approvals: number; rejections: number; votesCast: number; totalVoters: number; myVote: "approve" | "reject" | null } | null;
+  lastDiscard: { tile: string; playerId: string } | null;
   discards: string[]; log: string[]; players: PlayerView[]; hand: string[]; me: { id: string; name: string; seat: number } | null;
 };
 
@@ -46,6 +47,8 @@ export default function Home() {
   const [rulesOpen, setRulesOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [dissolveOpen, setDissolveOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
   const [avatarColor, setAvatarColor] = useState<AvatarColor>("cinnabar");
   const [restoring, setRestoring] = useState(true);
 
@@ -84,6 +87,8 @@ export default function Home() {
           if (join.ok) {
             const data = await join.json();
             setRoom(data);
+            setRenameDraft(data.me?.name || savedName);
+            setRenameOpen(true);
             localStorage.setItem("zique_last_room", linkedRoom);
             return;
           }
@@ -118,14 +123,15 @@ export default function Home() {
   useEffect(() => { setSelected([]); }, [room?.currentPlayerId, room?.phase, room?.revision]);
 
   const callGame = async (action: string, extra: Record<string, unknown> = {}) => {
-    if (!playerKey || busy) return;
+    if (!playerKey || busy) return false;
     setBusy(true); setMessage("");
     try {
-      localStorage.setItem("zique_name", name.trim() || "牌友");
+      const requestName = typeof extra.name === "string" ? extra.name.trim().slice(0, 10) : (name.trim() || "牌友");
+      localStorage.setItem("zique_name", requestName || "牌友");
       localStorage.setItem("zique_avatar_color", avatarColor);
       const response = await fetch(gameApi("/api/game"), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, code: room?.code || joinCode, playerKey, name, avatarColor, ...extra }),
+        body: JSON.stringify({ ...extra, action, code: room?.code || joinCode, playerKey, name: requestName, avatarColor }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "操作没有成功");
@@ -135,15 +141,25 @@ export default function Home() {
         setRoom(null); setSelected([]); setJoinCode("");
         setMessage("房间已解散");
         history.replaceState(null, "", "/");
-        return;
+        return true;
       }
       setRoom(data); setJoinCode(data.code); setSelected([]);
+      if (action === "rename") {
+        setName(requestName || "牌友");
+        setRenameOpen(false);
+      }
       if (action === "create" || action === "join") {
         localStorage.setItem("zique_last_room", data.code);
         history.replaceState(null, "", `?room=${data.code}`);
+        if (action === "join") {
+          setRenameDraft(data.me?.name || requestName);
+          setRenameOpen(true);
+        }
       }
+      return true;
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "操作没有成功");
+      return false;
     } finally { setBusy(false); }
   };
 
@@ -207,17 +223,19 @@ export default function Home() {
   const currentPlayer = room.players.find((player) => player.id === room.currentPlayerId);
   const winner = room.players.find((player) => player.id === room.winnerId);
   const claimant = room.players.find((player) => player.id === room.pendingWin?.playerId);
-  const statusText = room.status === "waiting" ? "等朋友入座" : room.status === "finished" ? "这一局结束了" : room.phase === "voting" ? `${claimant?.name || "牌友"} 申请胡牌，等待判定` : myTurn ? (room.phase === "draw" ? "轮到你摸牌" : "轮到你出牌或申请胡牌") : `${currentPlayer?.name || "牌友"} 正在想一句狠话`;
+  const discarder = room.players.find((player) => player.id === room.lastDiscard?.playerId);
+  const canEat = room.status === "playing" && room.phase === "claim" && !!room.lastDiscard && room.lastDiscard.playerId !== playerKey;
+  const statusText = room.status === "waiting" ? "等朋友入座" : room.status === "finished" ? "这一局结束了" : room.phase === "voting" ? `${claimant?.name || "牌友"} 申请胡牌，等待判定` : room.phase === "claim" ? `${discarder?.name || "牌友"} 打出「${room.lastDiscard?.tile || "字"}」，可以吃牌` : myTurn ? (room.phase === "draw" ? "轮到你摸牌" : "轮到你出牌或申请胡牌") : `${currentPlayer?.name || "牌友"} 正在想一句狠话`;
 
   const primary = () => {
     if (room.status === "waiting") return isHost ? callGame("start") : undefined;
     if (room.status === "finished") return isHost ? callGame("restart") : undefined;
     if (!myTurn) return undefined;
     if (room.phase === "voting") return undefined;
-    if (room.phase === "draw") return callGame("draw");
+    if (room.phase === "draw" || room.phase === "claim") return callGame("draw");
     if (room.phase === "discard" && selected.length === 1) return callGame("discard", { tileIndex: selected[0] });
   };
-  const primaryLabel = room.status === "waiting" ? (isHost ? "人齐了 · 开局" : "等房主开局") : room.status === "finished" ? (isHost ? "再来一局" : "等房主再开一局") : room.phase === "voting" ? "等待牌友判定" : !myTurn ? "还没轮到你" : room.phase === "draw" ? "摸一张" : selected.length === 1 ? `打出「${room.hand[selected[0]]}」` : "选一张牌打出";
+  const primaryLabel = room.status === "waiting" ? (isHost ? "人齐了 · 开局" : "等房主开局") : room.status === "finished" ? (isHost ? "再来一局" : "等房主再开一局") : room.phase === "voting" ? "等待牌友判定" : !myTurn ? "还没轮到你" : room.phase === "claim" ? "不吃 · 摸一张" : room.phase === "draw" ? "摸一张" : selected.length === 1 ? `打出「${room.hand[selected[0]]}」` : "选一张牌打出";
   const primaryDisabled = busy || (room.status === "waiting" && (!isHost || room.players.length < 2)) || (room.status === "finished" && !isHost) || (room.status === "playing" && (room.phase === "voting" || !myTurn || (room.phase === "discard" && selected.length !== 1)));
 
   return (
@@ -225,7 +243,7 @@ export default function Home() {
       <header className="topbar">
         <button className="brand brand-button" onClick={leaveToLobby}><span className="brand-mark">字</span><span><strong>字雀</strong><small>把话打到牌桌上</small></span></button>
         <button className="room-chip room-button" onClick={invite}><span className="live-dot" />房间 {room.code} · {room.players.length}/4 人 · 点此邀请</button>
-        <button className={`avatar color-${avatarColor}`} aria-label="当前轻登录身份">{room.me?.name.slice(0, 1) || "友"}</button>
+        <button className={`avatar color-${avatarColor}`} aria-label="修改牌友名字" onClick={() => { setRenameDraft(room.me?.name || name); setRenameOpen(true); }}>{room.me?.name.slice(0, 1) || "友"}</button>
       </header>
       <section className="table-wrap" aria-label="文字麻将牌桌">
         {otherPlayers.map((player, index) => <Seat key={player.id} player={player} position={["top", "left", "right"][index] || "right"} active={player.id === room.currentPlayerId} />)}
@@ -235,6 +253,12 @@ export default function Home() {
           {room.status === "waiting" ? <div className="waiting-table"><strong>{room.players.length} 位牌友已入座</strong><p>{room.players.length < 2 ? "再邀请至少一位朋友" : "房主随时可以开局"}</p><button onClick={invite}>复制邀请 · {room.code}</button></div> : <div className="discard-grid" aria-label="牌河">{room.discards.length ? room.discards.map((char, index) => <span className="mini-tile" key={`${char}-${index}`}>{char}</span>) : <span className="empty-river">还没有人出牌</span>}</div>}
           <div className="deck-count"><span>牌山</span><strong>{room.deckCount}</strong></div>
           {room.status === "finished" && <div className="winner-card"><small>{winner ? `${winner.name} 胡了` : "本局流局"}</small><strong>{room.winningSentence || "牌山见底"}</strong></div>}
+          {room.phase === "claim" && room.lastDiscard && <div className="eat-card">
+            <small>{discarder?.name || "牌友"} 打出</small>
+            <strong>「{room.lastDiscard.tile}」</strong>
+            {canEat ? <button onClick={() => callGame("eat")}>吃这张牌</button> : <p>等待其他牌友决定是否吃牌</p>}
+            {myTurn && <p>不想吃，也可以直接摸牌</p>}
+          </div>}
           {room.pendingWin && <div className="vote-card">
             <small>{claimant?.name || "牌友"} 申请胡牌</small>
             <strong>「{room.pendingWin.sentence}」</strong>
@@ -255,7 +279,7 @@ export default function Home() {
         <div className="hand-meta"><span>{room.log.at(-1) || "牌桌已准备好"}</span><span>{room.hand.length} 张手牌</span></div>
         <div className="hand" aria-label="你的手牌">
           {room.hand.length ? room.hand.map((char, index) => <button key={`${char}-${index}`} className={`tile ${selected.includes(index) ? "selected" : ""}`} onClick={() => toggleTile(index)} aria-pressed={selected.includes(index)}>{char}<small>{selected.includes(index) ? selected.indexOf(index) + 1 : ""}</small></button>) : <div className="empty-hand">开局后，你的字牌会出现在这里</div>}
-          {room.status === "playing" && room.phase === "draw" && myTurn && <button className="draw-tile" onClick={() => callGame("draw")}>摸</button>}
+          {room.status === "playing" && (room.phase === "draw" || room.phase === "claim") && myTurn && <button className="draw-tile" onClick={() => callGame("draw")}>摸</button>}
         </div>
       </section>
       {message && <div className="game-toast" role="status">{message}<button onClick={() => setMessage("")}>×</button></div>}
@@ -263,8 +287,24 @@ export default function Home() {
       {rulesOpen && <Rules onClose={() => setRulesOpen(false)} />}
       {shareOpen && <ShareRoom code={room.code} onClose={() => setShareOpen(false)} onNotice={setMessage} />}
       {dissolveOpen && <ConfirmDissolve busy={busy} onCancel={() => setDissolveOpen(false)} onConfirm={() => callGame("dissolve")} />}
+      {renameOpen && <RenamePlayer value={renameDraft} busy={busy} onChange={setRenameDraft} onSkip={() => setRenameOpen(false)} onSave={() => callGame("rename", { name: renameDraft })} />}
     </main>
   );
+}
+
+function RenamePlayer({ value, busy, onChange, onSkip, onSave }: { value: string; busy: boolean; onChange: (value: string) => void; onSkip: () => void; onSave: () => void }) {
+  return <div className="modal-backdrop">
+    <section className="rename-card" role="dialog" aria-modal="true" aria-label="确认牌友名字">
+      <p className="eyebrow">入座成功</p>
+      <h2>牌友，怎么称呼？</h2>
+      <p>换成朋友一眼能认出的名字，牌桌上才不会全员“牌友”。</p>
+      <label><span>你的名字</span><input autoFocus maxLength={10} value={value} onChange={(event) => onChange(event.target.value)} placeholder="输入昵称" /></label>
+      <div className="confirm-actions">
+        <button onClick={onSkip} disabled={busy}>暂时用这个</button>
+        <button className="save-name" onClick={onSave} disabled={busy || !value.trim()}>{busy ? "保存中…" : "改好了"}</button>
+      </div>
+    </section>
+  </div>;
 }
 
 function ConfirmDissolve({ busy, onCancel, onConfirm }: { busy: boolean; onCancel: () => void; onConfirm: () => void }) {
@@ -324,5 +364,5 @@ function Seat({ player, position, active }: { player: PlayerView; position: stri
 }
 
 function Rules({ onClose }: { onClose: () => void }) {
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="rules-card" role="dialog" aria-modal="true" aria-label="玩法说明"><button className="modal-close" onClick={onClose}>×</button><p className="eyebrow">三分钟上手</p><h2>怎么打字雀</h2><ol><li><b>摸字</b><span>轮到你时，从牌山摸一张字牌。</span></li><li><b>出牌</b><span>选一张暂时用不上的字，打到牌河里。</span></li><li><b>申请胡牌</b><span>用至少四张字牌组成一句话，提交给同桌牌友判定。</span></li><li><b>牌友投票</b><span>申请者不能给自己投票；其余牌友全部投票，赞成过半才算胡，平票则驳回。</span></li></ol><button className="rules-done" onClick={onClose}>懂了，开打</button></section></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="rules-card" role="dialog" aria-modal="true" aria-label="玩法说明"><button className="modal-close" onClick={onClose}>×</button><p className="eyebrow">三分钟上手</p><h2>怎么打字雀</h2><ol><li><b>摸字</b><span>轮到你时，从牌山摸一张字牌。</span></li><li><b>吃牌</b><span>任意牌友出牌后，你都可以抢先吃下；吃牌当轮不能再摸牌，必须直接出牌。</span></li><li><b>出牌</b><span>选一张暂时用不上的字，打到牌河里。</span></li><li><b>申请胡牌</b><span>用至少四张字牌组成一句话，提交给同桌牌友判定。</span></li><li><b>牌友投票</b><span>申请者不能给自己投票；其余牌友全部投票，赞成过半才算胡，平票则驳回。</span></li></ol><button className="rules-done" onClick={onClose}>懂了，开打</button></section></div>;
 }

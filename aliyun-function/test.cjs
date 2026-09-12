@@ -79,29 +79,49 @@ test("两名玩家可以创建、加入并完成一局", async () => {
   const joined = await invoke("POST", { body: { action: "join", code, playerKey: "p2", name: "乙", avatarColor: "jade" } });
   assert.equal(joined.json.players.length, 2);
 
+  const renamed = await invoke("POST", { body: { action: "rename", code, playerKey: "p2", name: "乙同学", avatarColor: "jade" } });
+  assert.equal(renamed.json.me.name, "乙同学");
+
   const started = await invoke("POST", { body: { action: "start", code, playerKey: "p1" } });
   assert.equal(started.json.status, "playing");
   assert.equal(started.json.hand.length, 14);
 
   const discarded = await invoke("POST", { body: { action: "discard", code, playerKey: "p1", tileIndex: 0 } });
-  assert.equal(discarded.json.phase, "draw");
+  assert.equal(discarded.json.phase, "claim");
   assert.equal(discarded.json.currentPlayerId, "p2");
+  assert.equal(discarded.json.lastDiscard.playerId, "p1");
 
-  const drawn = await invoke("POST", { body: { action: "draw", code, playerKey: "p2" } });
+  const ownDiscard = await invoke("POST", { body: { action: "eat", code, playerKey: "p1" } });
+  assert.equal(ownDiscard.statusCode, 400);
+
+  const eaten = await invoke("POST", { body: { action: "eat", code, playerKey: "p2" } });
+  assert.equal(eaten.json.phase, "discard");
+  assert.equal(eaten.json.currentPlayerId, "p2");
+  assert.equal(eaten.json.hand.length, 14);
+  assert.equal(eaten.json.discards.length, 0);
+
+  const cannotDrawAfterEating = await invoke("POST", { body: { action: "draw", code, playerKey: "p2" } });
+  assert.equal(cannotDrawAfterEating.statusCode, 400);
+
+  const discardedAfterEating = await invoke("POST", { body: { action: "discard", code, playerKey: "p2", tileIndex: 0 } });
+  assert.equal(discardedAfterEating.json.phase, "claim");
+  assert.equal(discardedAfterEating.json.currentPlayerId, "p1");
+
+  const drawn = await invoke("POST", { body: { action: "draw", code, playerKey: "p1" } });
   assert.equal(drawn.json.phase, "discard");
   assert.equal(drawn.json.hand.length, 14);
 
-  const claimed = await invoke("POST", { body: { action: "win", code, playerKey: "p2", sentenceIndices: [0, 1, 2, 3] } });
+  const claimed = await invoke("POST", { body: { action: "win", code, playerKey: "p1", sentenceIndices: [0, 1, 2, 3] } });
   assert.equal(claimed.json.status, "playing");
   assert.equal(claimed.json.phase, "voting");
-  assert.equal(claimed.json.pendingWin.playerId, "p2");
+  assert.equal(claimed.json.pendingWin.playerId, "p1");
 
-  const selfVote = await invoke("POST", { body: { action: "voteWin", code, playerKey: "p2", approve: true } });
+  const selfVote = await invoke("POST", { body: { action: "voteWin", code, playerKey: "p1", approve: true } });
   assert.equal(selfVote.statusCode, 400);
 
-  const won = await invoke("POST", { body: { action: "voteWin", code, playerKey: "p1", approve: true } });
+  const won = await invoke("POST", { body: { action: "voteWin", code, playerKey: "p2", approve: true } });
   assert.equal(won.json.status, "finished");
-  assert.equal(won.json.winnerId, "p2");
+  assert.equal(won.json.winnerId, "p1");
   assert.equal(won.json.winningSentence.length, 4);
 
   const unauthorized = await invoke("POST", { body: { action: "dissolve", code, playerKey: "p2" } });
