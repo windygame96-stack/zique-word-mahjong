@@ -20,6 +20,46 @@ const TILE_GROUPS = [
   { copies: 1, chars: ["今", "天", "明", "晚", "早", "夜", "回", "到", "见", "走", "睡", "快", "慢", "风", "雨", "花", "月", "猫", "茶", "饭", "朋", "友", "心", "开"] },
 ];
 const AVATAR_COLORS = new Set(["cinnabar", "jade", "ocean", "plum", "amber", "ink"]);
+const TRUTH_PROMPTS = [
+  "最近一次嘴硬但心里认输，是什么时候？",
+  "在场的人里，你最想和谁交换一天生活？",
+  "你手机里最舍不得删的一张照片是什么？",
+  "最近做过最幼稚的一件事是什么？",
+  "如果明天不用上班或上学，你最想去哪儿？",
+  "你最常假装不在意的事情是什么？",
+  "说一个朋友们可能不知道的小习惯。",
+  "哪首歌一响，你会立刻想起某个人？",
+  "你收到过最让你开心的一句夸奖是什么？",
+  "如果能重来一次，你最想改掉哪次决定？",
+  "你最想拥有哪一种没什么用的超能力？",
+  "最近一次偷偷羡慕别人，是因为什么？",
+  "你给别人留下的第一印象，和真实的你差多少？",
+  "你最容易被哪一种小事哄开心？",
+  "说一件你拖了很久、其实十分钟能做完的事。",
+  "如果只能保留三个手机应用，你会留下什么？",
+  "你小时候相信过最离谱的事情是什么？",
+  "最近有什么话想说却一直没说出口？",
+];
+const DARE_PROMPTS = [
+  "用播音腔朗读刚才的输牌感言十秒钟。",
+  "模仿一种动物，让大家猜是什么。",
+  "用三个表情包形容自己今天的状态。",
+  "给在场每个人各说一句真诚的夸奖。",
+  "用一句广告词推销你手边最近的物品。",
+  "闭眼画一只猫，展示给大家看。",
+  "用方言说一句“下把我一定赢”。",
+  "把自己的昵称改成大家指定的称号，保留一局。",
+  "即兴唱一句包含“麻将”的歌词。",
+  "摆出一个胜利姿势，虽然你刚刚输了。",
+  "用五个词编一个离谱的小故事。",
+  "模仿一位在场朋友的口头禅，让大家猜。",
+  "下一局开始前，全程用敬语说话一分钟。",
+  "拍一张手边物品的艺术照，展示给大家。",
+  "用一句话给刚才的牌局起一个电影名。",
+  "做一个十秒钟的无声表演，让大家猜主题。",
+  "用最夸张的语气祝贺本局赢家。",
+  "选一个常用词，下一局五分钟内不能说它。",
+];
 
 function makeDeck() {
   const deck = TILE_GROUPS.flatMap(({ copies, chars }) => Array.from({ length: copies }, () => chars).flat());
@@ -53,6 +93,16 @@ function roomVariant(state) {
 
 function isMahjongRoom(state) {
   return roomVariant(state) !== "word";
+}
+
+function losingPlayerIds(state) {
+  if (state.status !== "finished") return [];
+  if (roomVariant(state) === "sichuan" && state.winners?.length) {
+    const winners = new Set(state.winners.map((item) => item.playerId));
+    return state.players.filter((item) => !winners.has(item.id)).map((item) => item.id);
+  }
+  if (!state.winnerId) return [];
+  return state.players.filter((item) => item.id !== state.winnerId).map((item) => item.id);
 }
 
 function nextActiveTurn(state, fromSeat) {
@@ -133,6 +183,8 @@ function publicState(row, state, playerKey) {
     hunIndicator: state.hunIndicator || null,
     exchangeDirection: state.exchangeDirection || null,
     winners: state.winners || [],
+    challenges: Object.values(state.challenges || {}),
+    losingPlayerIds: losingPlayerIds(state),
     ...actionState,
     lastDiscard: state.lastDiscard || null,
     deckCount: state.deck.length,
@@ -332,6 +384,7 @@ function startMahjong(state) {
   state.winningSentence = null;
   state.pendingWin = null;
   state.winners = [];
+  state.challenges = {};
   state.exchangeSelections = {};
   if (variant === "sichuan") {
     const directions = [
@@ -635,6 +688,17 @@ async function handle(event, context) {
         throw error;
       }
       return response(origin, 200, { dissolved: true, code });
+    } else if (action === "challenge") {
+      if (!losingPlayerIds(state).includes(playerKey)) return response(origin, 400, { error: "只有本局输家可以抽惩罚卡" });
+      const type = payload.challengeType === "dare" ? "dare" : payload.challengeType === "truth" ? "truth" : null;
+      if (!type) return response(origin, 400, { error: "请选择真心话或大冒险" });
+      const prompts = type === "truth" ? TRUTH_PROMPTS : DARE_PROMPTS;
+      const previous = state.challenges?.[playerKey]?.prompt;
+      const choices = prompts.filter((prompt) => prompt !== previous);
+      const prompt = choices[Math.floor(Math.random() * choices.length)];
+      state.challenges ||= {};
+      state.challenges[playerKey] = { playerId: playerKey, type, prompt };
+      state.log.push(`${player.name} 选择了${type === "truth" ? "真心话" : "大冒险"}`);
     } else if (isMahjongRoom(state)) {
       const error = applyMahjongAction(state, player, action, payload);
       if (error) return response(origin, 400, { error });
@@ -645,7 +709,7 @@ async function handle(event, context) {
       state.players.forEach((item) => { item.hand = deck.splice(0, 13); });
       state.players[0].hand.push(deck.pop());
       state.deck = deck; state.discards = []; state.lastDiscard = null; state.turn = 0; state.phase = "discard"; state.status = "playing";
-      state.winnerId = null; state.winningSentence = null; state.pendingWin = null; state.log = ["牌局开始，房主先出牌"];
+      state.winnerId = null; state.winningSentence = null; state.pendingWin = null; state.challenges = {}; state.log = ["牌局开始，房主先出牌"];
     } else if (action === "draw") {
       if (state.status !== "playing" || state.players[state.turn]?.id !== playerKey || !["draw", "claim"].includes(state.phase)) return response(origin, 400, { error: "现在还不能摸牌" });
       state.lastDiscard = null;

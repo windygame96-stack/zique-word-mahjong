@@ -1,6 +1,7 @@
 export type AvatarColor = "cinnabar" | "jade" | "ocean" | "plum" | "amber" | "ink";
 export type GameVariant = "word" | "sichuan" | "beijing";
 export type Meld = { type: "chi" | "peng" | "gang" | "angang"; tiles: string[]; fromPlayerId: string };
+export type RoundChallenge = { playerId: string; type: "truth" | "dare"; prompt: string };
 
 export type PlayerView = {
   id: string;
@@ -39,6 +40,8 @@ export type RoomView = {
   hunIndicator: string | null;
   exchangeDirection: string | null;
   winners: { playerId: string; type: string; score: number }[];
+  challenges: RoundChallenge[];
+  losingPlayerIds: string[];
   availableActions: string[];
   chiOptions: string[][];
   gangTiles: string[];

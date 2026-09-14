@@ -124,6 +124,14 @@ test("两名玩家可以创建、加入并完成一局", async () => {
   assert.equal(won.json.winnerId, "p1");
   assert.equal(won.json.winningSentence.length, 4);
 
+  const challenged = await invoke("POST", { body: { action: "challenge", code, playerKey: "p2", challengeType: "truth" } });
+  assert.equal(challenged.statusCode, 200);
+  assert.equal(challenged.json.challenges[0].playerId, "p2");
+  assert.equal(challenged.json.challenges[0].type, "truth");
+  assert.ok(challenged.json.challenges[0].prompt.length > 5);
+  const winnerCannotChoose = await invoke("POST", { body: { action: "challenge", code, playerKey: "p1", challengeType: "dare" } });
+  assert.equal(winnerCannotChoose.statusCode, 400);
+
   const unauthorized = await invoke("POST", { body: { action: "dissolve", code, playerKey: "p2" } });
   assert.equal(unauthorized.statusCode, 403);
 

@@ -1,6 +1,7 @@
 "use client";
 
 import type { AvatarColor, PlayerView, RoomView } from "./game-types";
+import TruthOrDare from "./truth-or-dare";
 
 const NUMERALS = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
 const HONORS: Record<string, string> = { z1: "东", z2: "南", z3: "西", z4: "北", z5: "中", z6: "发", z7: "白" };
@@ -123,7 +124,7 @@ export default function MahjongGame({ room, playerKey, avatarColor, selected, bu
           {actions.has("pass") && !actions.has("draw") && <button className="pass-action" onClick={() => callGame("pass")}>过</button>}
           {actions.has("draw") && <button className="pass-action" onClick={() => callGame("draw")}>过</button>}
         </div></div>}
-        {room.status === "finished" && <div className="winner-card"><small>{winner ? `${winner.name} 胡了` : "本局荒庄"}</small><strong>{room.variant === "sichuan" && room.winners.length ? room.winners.map((item) => room.players.find((player) => player.id === item.playerId)?.name).join("、") : variantName}</strong></div>}
+        {room.status === "finished" && <div className="winner-card"><small>{winner ? `${winner.name} 胡了` : "本局荒庄"}</small><strong>{room.variant === "sichuan" && room.winners.length ? room.winners.map((item) => room.players.find((player) => player.id === item.playerId)?.name).join("、") : variantName}</strong><TruthOrDare room={room} playerKey={playerKey} busy={busy} callGame={callGame} /></div>}
       </div>
     </section>
 

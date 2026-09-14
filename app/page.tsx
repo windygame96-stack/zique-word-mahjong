@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import MahjongGame from "./mahjong-game";
+import TruthOrDare from "./truth-or-dare";
 import type { AvatarColor, GameVariant, PlayerView, RoomView } from "./game-types";
 
 const AVATAR_COLORS: { key: AvatarColor; label: string }[] = [
@@ -266,7 +267,7 @@ export default function Home() {
           <div className={`turn-badge ${myTurn ? "your-turn" : ""}`}>{statusText}</div>
           {room.status === "waiting" ? <div className="waiting-table"><strong>{room.players.length} 位牌友已入座</strong><p>{room.players.length < 2 ? "再邀请至少一位朋友" : "房主随时可以开局"}</p><button onClick={invite}>复制邀请 · {room.code}</button></div> : <div className="discard-grid" aria-label="牌河">{room.discards.length ? room.discards.map((char, index) => <span className="mini-tile" key={`${char}-${index}`}>{char}</span>) : <span className="empty-river">还没有人出牌</span>}</div>}
           <div className="deck-count"><span>牌山</span><strong>{room.deckCount}</strong></div>
-          {room.status === "finished" && <div className="winner-card"><small>{winner ? `${winner.name} 胡了` : "本局流局"}</small><strong>{room.winningSentence || "牌山见底"}</strong></div>}
+          {room.status === "finished" && <div className="winner-card"><small>{winner ? `${winner.name} 胡了` : "本局流局"}</small><strong>{room.winningSentence || "牌山见底"}</strong><TruthOrDare room={room} playerKey={playerKey} busy={busy} callGame={callGame} /></div>}
           {room.phase === "claim" && room.lastDiscard && <div className="eat-card">
             <small>{discarder?.name || "牌友"} 打出</small>
             <strong>「{room.lastDiscard.tile}」</strong>

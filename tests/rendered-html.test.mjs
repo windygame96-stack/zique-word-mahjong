@@ -23,10 +23,11 @@ test("服务端渲染麻将馆页面与元数据", async () => {
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/);
 });
 
-test("前端包含三种玩法入口与传统麻将牌桌", async () => {
-  const [page, mahjong] = await Promise.all([
+test("前端包含三种玩法入口、传统麻将牌桌与输家加赛", async () => {
+  const [page, mahjong, challenge] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/mahjong-game.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/truth-or-dare.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(page, /字雀 · 川麻 · 京麻/);
   assert.match(page, /"sichuan", "川麻"/);
@@ -37,4 +38,6 @@ test("前端包含三种玩法入口与传统麻将牌桌", async () => {
   assert.match(mahjong, /callGame\("peng"/);
   assert.match(mahjong, /callGame\("gang"/);
   assert.match(mahjong, /callGame\("hu"/);
+  assert.match(challenge, /真心话 or 大冒险/);
+  assert.match(challenge, /callGame\("challenge"/);
 });
