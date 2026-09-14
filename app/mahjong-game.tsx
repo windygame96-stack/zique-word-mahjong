@@ -50,7 +50,7 @@ type Props = {
 };
 
 export default function MahjongGame({ room, playerKey, avatarColor, selected, busy, message, callGame, setSelected, onLeave, onInvite, onRules, onRename, onDissolve, onClearMessage }: Props) {
-  const variantName = room.variant === "sichuan" ? "川麻 · 血战到底" : "京麻 · 吃碰杠";
+  const variantName = room.variant === "sichuan" ? "川麻 · 血战到底" : "京麻 · 吃碰提";
   const myTurn = room.currentPlayerId === playerKey;
   const isHost = room.hostId === playerKey;
   const me = room.players.find((player) => player.id === playerKey);
