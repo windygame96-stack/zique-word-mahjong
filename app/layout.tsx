@@ -18,11 +18,11 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = incoming.get("x-forwarded-host") || incoming.get("host") || "localhost:3000";
   const protocol = incoming.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
   const image = `${protocol}://${host}/og.png`;
-  const title = "字雀 · 和朋友一起打文字麻将";
-  const description = "玩法借鉴《白色失明文字麻将》的非官方线上版本。无需注册，输入昵称即可和朋友在线摸字、出牌、拼句胡牌。";
+  const title = "字雀麻将馆 · 字雀、川麻与京麻";
+  const description = "免注册和朋友在线玩文字麻将、川麻血战到底与京麻吃碰提。创建房间，分享链接即可入座。";
   return {
     title, description,
-    openGraph: { title, description, images: [{ url: image, width: 1733, height: 909, alt: "字雀，把话打到牌桌上" }] },
+    openGraph: { title, description, images: [{ url: image, width: 1733, height: 909, alt: "字雀麻将馆，今晚开一桌" }] },
     twitter: { card: "summary_large_image", title, description, images: [image] },
   };
 }

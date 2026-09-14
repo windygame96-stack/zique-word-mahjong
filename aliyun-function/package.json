@@ -5,7 +5,7 @@
   "description": "字雀多人房间 API for Alibaba Cloud Function Compute",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test.cjs"
+    "test": "node --test test.cjs mahjong.test.cjs"
   },
   "dependencies": {
     "tablestore": "5.6.5"

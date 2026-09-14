@@ -134,3 +134,78 @@ test("两名玩家可以创建、加入并完成一局", async () => {
   const missing = await invoke("GET", { query: { code, playerKey: "p1" } });
   assert.equal(missing.statusCode, 404);
 });
+
+function threeSameSuitIndices(hand) {
+  for (const suit of ["m", "p", "s"]) {
+    const indices = hand.map((tile, index) => tile.startsWith(suit) ? index : -1).filter((index) => index >= 0);
+    if (indices.length >= 3) return indices.slice(0, 3);
+  }
+  throw new Error("没有可换出的三张同门牌");
+}
+
+async function createFourPlayerRoom(variant, prefix) {
+  const ids = [0, 1, 2, 3].map((index) => `${prefix}-${index}`);
+  const created = await invoke("POST", { body: { action: "create", variant, playerKey: ids[0], name: "东家" } });
+  const code = created.json.code;
+  for (let index = 1; index < ids.length; index += 1) {
+    await invoke("POST", { body: { action: "join", code, playerKey: ids[index], name: `牌友${index}` } });
+  }
+  return { code, ids };
+}
+
+test("川麻完成换三张与定缺流程", async () => {
+  const { code, ids } = await createFourPlayerRoom("sichuan", "sc");
+  const started = await invoke("POST", { body: { action: "start", code, playerKey: ids[0] } });
+  assert.equal(started.json.variant, "sichuan");
+  assert.equal(started.json.phase, "exchange");
+  assert.equal(started.json.deckCount, 55);
+
+  let latest;
+  for (const id of ids) {
+    const view = await invoke("GET", { query: { code, playerKey: id } });
+    latest = await invoke("POST", { body: { action: "exchange", code, playerKey: id, tileIndices: threeSameSuitIndices(view.json.hand) } });
+  }
+  assert.equal(latest.json.phase, "dingque");
+  for (const [index, id] of ids.entries()) {
+    latest = await invoke("POST", { body: { action: "dingque", code, playerKey: id, suit: ["m", "p", "s", "m"][index] } });
+  }
+  assert.equal(latest.json.phase, "discard");
+  assert.equal(latest.json.currentPlayerId, ids[0]);
+});
+
+test("京麻开局翻出上滚混儿", async () => {
+  const { code, ids } = await createFourPlayerRoom("beijing", "bj");
+  const started = await invoke("POST", { body: { action: "start", code, playerKey: ids[0] } });
+  assert.equal(started.json.variant, "beijing");
+  assert.equal(started.json.phase, "discard");
+  assert.equal(started.json.deckCount, 82);
+  assert.match(started.json.hunIndicator, /^[mpsz]\d$/);
+  assert.match(started.json.hunTile, /^[mpsz]\d$/);
+});
+
+test("京麻碰牌优先于吃牌，过牌后才可吃", async () => {
+  const { code, ids } = await createFourPlayerRoom("beijing", "priority");
+  await invoke("POST", { body: { action: "start", code, playerKey: ids[0] } });
+  const stored = rows.get(code);
+  const state = JSON.parse(stored.state_json);
+  state.hunTile = "z7";
+  state.phase = "discard";
+  state.turn = 0;
+  state.players[0].hand = ["m3", "m4", "m5", "m7", "p1", "p3", "p5", "p7", "s1", "s3", "s5", "s7", "z1", "z3"];
+  state.players[1].hand = ["m1", "m2", "m5", "m7", "p1", "p3", "p5", "p7", "s1", "s3", "s5", "z1", "z3"];
+  state.players[2].hand = ["m3", "m3", "m5", "m7", "p1", "p3", "p5", "p7", "s1", "s3", "s5", "z1", "z3"];
+  state.players[3].hand = ["m1", "m4", "m7", "p1", "p4", "p7", "s1", "s4", "s7", "z1", "z2", "z3", "z5"];
+  stored.state_json = JSON.stringify(state);
+
+  const discarded = await invoke("POST", { body: { action: "discard", code, playerKey: ids[0], tileIndex: 0 } });
+  assert.equal(discarded.json.phase, "claim");
+  const earlyChi = await invoke("POST", { body: { action: "chi", code, playerKey: ids[1], tiles: ["m1", "m2"] } });
+  assert.equal(earlyChi.statusCode, 400);
+  assert.match(earlyChi.json.error, /碰、杠或胡/);
+  const passed = await invoke("POST", { body: { action: "pass", code, playerKey: ids[2] } });
+  assert.equal(passed.statusCode, 200);
+  const eaten = await invoke("POST", { body: { action: "chi", code, playerKey: ids[1], tiles: ["m1", "m2"] } });
+  assert.equal(eaten.statusCode, 200);
+  assert.equal(eaten.json.phase, "discard");
+  assert.equal(eaten.json.players.find((player) => player.id === ids[1]).melds[0].type, "chi");
+});

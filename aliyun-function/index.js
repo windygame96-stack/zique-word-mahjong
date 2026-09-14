@@ -1,6 +1,18 @@
 "use strict";
 
 const TableStore = require("tablestore");
+const {
+  SUITS,
+  chiOptions,
+  countTile,
+  isSameSuitSelection,
+  isWinningHand,
+  makeMahjongDeck,
+  nextHunTile,
+  removeTiles,
+  sortTiles,
+  tileSuit,
+} = require("./mahjong");
 
 const TILE_GROUPS = [
   { copies: 3, chars: ["我", "你", "他", "她", "们", "的", "了", "是", "不", "很", "也", "都", "就", "还", "想", "要", "会", "能", "有", "在", "去", "来", "爱", "好"] },
@@ -31,6 +43,68 @@ function cleanAvatarColor(value) {
   return typeof value === "string" && AVATAR_COLORS.has(value) ? value : "cinnabar";
 }
 
+function cleanVariant(value) {
+  return ["word", "sichuan", "beijing"].includes(value) ? value : "word";
+}
+
+function roomVariant(state) {
+  return cleanVariant(state.variant);
+}
+
+function isMahjongRoom(state) {
+  return roomVariant(state) !== "word";
+}
+
+function nextActiveTurn(state, fromSeat) {
+  for (let offset = 1; offset <= state.players.length; offset += 1) {
+    const index = (fromSeat + offset) % state.players.length;
+    if (!state.players[index].won) return index;
+  }
+  return fromSeat;
+}
+
+function canMahjongWin(state, player, tiles) {
+  if (roomVariant(state) === "sichuan") {
+    if (!player.missingSuit || tiles.some((tile) => tileSuit(tile) === player.missingSuit)) return false;
+  }
+  return isWinningHand(tiles, player.melds?.length || 0, roomVariant(state) === "beijing" ? state.hunTile : null);
+}
+
+function mahjongActions(state, playerKey) {
+  const player = state.players.find((item) => item.id === playerKey);
+  if (!player || player.won || state.status !== "playing") return { availableActions: [], chiOptions: [], gangTiles: [] };
+  const actions = [];
+  let choices = [];
+  let gangTiles = [];
+  const isCurrent = state.players[state.turn]?.id === playerKey;
+
+  if (state.phase === "exchange" && !state.exchangeSelections?.[playerKey]) actions.push("exchange");
+  if (state.phase === "dingque" && !player.missingSuit) actions.push("dingque");
+  if (isCurrent && state.phase === "draw") actions.push("draw");
+  if (isCurrent && state.phase === "discard") {
+    actions.push("discard");
+    if (canMahjongWin(state, player, player.hand)) actions.push("hu");
+    gangTiles = [...new Set(player.hand.filter((tile) => countTile(player.hand, tile) === 4))];
+    if (gangTiles.length) actions.push("gang");
+  }
+  if (state.phase === "claim" && state.lastDiscard?.playerId !== playerKey && state.claimPasses?.[playerKey]) {
+    if (isCurrent) actions.push("draw");
+  } else if (state.phase === "claim" && state.lastDiscard?.playerId !== playerKey) {
+    const tile = state.lastDiscard?.tile;
+    const openHand = (player.melds || []).some((meld) => meld.type !== "angang");
+    if (tile && canMahjongWin(state, player, [...player.hand, tile]) && !(roomVariant(state) === "beijing" && openHand)) actions.push("hu");
+    if (tile && countTile(player.hand, tile) >= 2) actions.push("peng");
+    if (tile && countTile(player.hand, tile) >= 3) actions.push("gang");
+    if (roomVariant(state) === "beijing" && isCurrent && tile) {
+      choices = chiOptions(player.hand, tile);
+      if (choices.length) actions.push("chi");
+    }
+    if (actions.some((action) => ["hu", "gang", "peng", "chi"].includes(action))) actions.push("pass");
+    if (isCurrent) actions.push("draw");
+  }
+  return { availableActions: [...new Set(actions)], chiOptions: choices, gangTiles };
+}
+
 function publicState(row, state, playerKey) {
   const me = state.players.find((player) => player.id === playerKey);
   const pendingWin = state.pendingWin ? {
@@ -42,10 +116,12 @@ function publicState(row, state, playerKey) {
     totalVoters: Math.max(0, state.players.length - 1),
     myVote: state.pendingWin.votes[playerKey] || null,
   } : null;
+  const actionState = isMahjongRoom(state) ? mahjongActions(state, playerKey) : { availableActions: [], chiOptions: [], gangTiles: [] };
   return {
     code: row.code,
     revision: row.revision,
     status: state.status,
+    variant: roomVariant(state),
     phase: state.phase,
     turn: state.turn,
     currentPlayerId: state.players[state.turn]?.id ?? null,
@@ -53,12 +129,18 @@ function publicState(row, state, playerKey) {
     winnerId: state.winnerId,
     winningSentence: state.winningSentence,
     pendingWin,
+    hunTile: state.hunTile || null,
+    hunIndicator: state.hunIndicator || null,
+    exchangeDirection: state.exchangeDirection || null,
+    winners: state.winners || [],
+    ...actionState,
     lastDiscard: state.lastDiscard || null,
     deckCount: state.deck.length,
     discards: state.discards.slice(-40),
     log: state.log.slice(-5),
-    players: state.players.map(({ id, name, avatar, avatarUrl, avatarColor, hand, seat }) => ({
+    players: state.players.map(({ id, name, avatar, avatarUrl, avatarColor, hand, seat, melds, missingSuit, won, score }) => ({
       id, name, avatar, avatarUrl, avatarColor: avatarColor || "cinnabar", handCount: hand.length, seat,
+      melds: melds || [], missingSuit: missingSuit || null, won: !!won, score: score || 0,
     })),
     hand: me?.hand ?? [],
     me: me ? { id: me.id, name: me.name, seat: me.seat } : null,
@@ -209,6 +291,256 @@ function isConditionConflict(error) {
   return /ConditionCheckFail|condition check/i.test(code);
 }
 
+function drawMahjongTile(state, player) {
+  state.lastDiscard = null;
+  const tile = state.deck.pop();
+  if (!tile) {
+    state.status = "finished";
+    state.phase = "finished";
+    state.log.push("牌墙见底，本局荒庄");
+    return false;
+  }
+  player.hand = sortTiles([...player.hand, tile]);
+  state.phase = "discard";
+  state.log.push(`${player.name} 摸了一张牌`);
+  return true;
+}
+
+function startMahjong(state) {
+  const variant = roomVariant(state);
+  const deck = makeMahjongDeck(variant);
+  state.players.forEach((player) => {
+    player.hand = [];
+    player.melds = [];
+    player.missingSuit = null;
+    player.won = false;
+    player.score = 0;
+  });
+  for (let round = 0; round < 13; round += 1) {
+    state.players.forEach((player) => player.hand.push(deck.pop()));
+  }
+  state.players[0].hand.push(deck.pop());
+  state.players.forEach((player) => { player.hand = sortTiles(player.hand); });
+  state.hunIndicator = variant === "beijing" ? deck.pop() : null;
+  state.hunTile = state.hunIndicator ? nextHunTile(state.hunIndicator) : null;
+  state.deck = deck;
+  state.discards = [];
+  state.lastDiscard = null;
+  state.turn = 0;
+  state.status = "playing";
+  state.winnerId = null;
+  state.winningSentence = null;
+  state.pendingWin = null;
+  state.winners = [];
+  state.exchangeSelections = {};
+  if (variant === "sichuan") {
+    const directions = [
+      { name: "顺时针", offset: 1 },
+      { name: "对家", offset: 2 },
+      { name: "逆时针", offset: 3 },
+    ];
+    const direction = directions[Math.floor(Math.random() * directions.length)];
+    state.exchangeDirection = direction.name;
+    state.exchangeOffset = direction.offset;
+    state.phase = "exchange";
+    state.log = [`川麻开局，请各自选三张同门牌，${direction.name}交换`];
+  } else {
+    state.exchangeDirection = null;
+    state.exchangeOffset = null;
+    state.phase = "discard";
+    state.log = [`京麻开局，本局混儿为 ${state.hunTile}`];
+  }
+}
+
+function finishMahjongClaim(state, player, type, tiles, fromPlayerId) {
+  const lastTile = state.lastDiscard.tile;
+  state.discards.pop();
+  player.melds.push({ type, tiles, fromPlayerId });
+  state.turn = player.seat;
+  state.lastDiscard = null;
+  state.phase = "discard";
+  state.log.push(`${player.name} ${type === "chi" ? "吃" : type === "peng" ? "碰" : "明杠"}了 ${lastTile}`);
+}
+
+function settleMahjongWin(state, player, selfDraw, fromPlayerId) {
+  const active = state.players.filter((item) => !item.won && item.id !== player.id);
+  const points = selfDraw ? 2 : 1;
+  if (selfDraw) {
+    active.forEach((item) => { item.score -= points; player.score += points; });
+  } else {
+    const payer = state.players.find((item) => item.id === fromPlayerId);
+    const payment = roomVariant(state) === "beijing" ? points * Math.max(1, active.length) : points;
+    if (payer) { payer.score -= payment; player.score += payment; }
+  }
+  state.winners.push({ playerId: player.id, type: selfDraw ? "自摸" : "点炮", score: player.score });
+  state.log.push(`${player.name} ${selfDraw ? "自摸" : "胡牌"}了`);
+}
+
+function blockingClaim(state, playerId, priority) {
+  const priorities = { chi: 1, peng: 2, gang: 2, hu: 3 };
+  return state.players.some((item) => {
+    if (item.id === playerId || item.id === state.lastDiscard?.playerId || state.claimPasses?.[item.id]) return false;
+    return mahjongActions(state, item.id).availableActions.some((action) => (priorities[action] || 0) > priority);
+  });
+}
+
+function anyOpenClaim(state, excludingPlayerId) {
+  return state.players.some((item) => {
+    if (item.id === excludingPlayerId || item.id === state.lastDiscard?.playerId || state.claimPasses?.[item.id]) return false;
+    return mahjongActions(state, item.id).availableActions.some((action) => ["hu", "gang", "peng", "chi"].includes(action));
+  });
+}
+
+function applyMahjongAction(state, player, action, payload) {
+  const variant = roomVariant(state);
+  const current = state.players[state.turn];
+  const isCurrent = current?.id === player.id;
+  if (action === "start" || action === "restart") {
+    if (state.hostId !== player.id) return "只有房主可以开局";
+    if (state.players.length !== 4) return "川麻和京麻需要四位牌友到齐";
+    startMahjong(state);
+    return null;
+  }
+  if (state.status !== "playing" || player.won) return "现在不能进行这个操作";
+
+  if (action === "exchange") {
+    if (variant !== "sichuan" || state.phase !== "exchange") return "现在不用换三张";
+    if (state.exchangeSelections[player.id]) return "你已经选好换出的牌了";
+    const indices = Array.isArray(payload.tileIndices) ? payload.tileIndices.map(Number) : [];
+    if (!isSameSuitSelection(player.hand, indices)) return "请选择三张同一花色的牌";
+    state.exchangeSelections[player.id] = [...indices];
+    state.log.push(`${player.name} 已选好换三张`);
+    if (Object.keys(state.exchangeSelections).length === state.players.length) {
+      const outgoing = state.players.map((item) => state.exchangeSelections[item.id].map((index) => item.hand[index]));
+      state.players.forEach((item, seat) => {
+        item.hand = item.hand.filter((_, index) => !state.exchangeSelections[item.id].includes(index));
+        const sender = (seat - state.exchangeOffset + state.players.length) % state.players.length;
+        item.hand = sortTiles([...item.hand, ...outgoing[sender]]);
+      });
+      state.phase = "dingque";
+      state.log.push(`换三张完成，请选择定缺花色`);
+    }
+    return null;
+  }
+
+  if (action === "dingque") {
+    if (variant !== "sichuan" || state.phase !== "dingque") return "现在不用定缺";
+    const suit = String(payload.suit || "");
+    if (!SUITS.includes(suit)) return "请选择缺万、缺筒或缺条";
+    player.missingSuit = suit;
+    state.log.push(`${player.name} 已完成定缺`);
+    if (state.players.every((item) => item.missingSuit)) {
+      state.phase = "discard";
+      state.turn = 0;
+      state.log.push("定缺完成，庄家先出牌");
+    }
+    return null;
+  }
+
+  if (action === "draw") {
+    if (!isCurrent || !["draw", "claim"].includes(state.phase)) return "现在还不能摸牌";
+    if (state.phase === "claim" && anyOpenClaim(state, player.id)) return "还有牌友可以吃碰杠胡，请等对方选择或过牌";
+    drawMahjongTile(state, player);
+    return null;
+  }
+
+  if (action === "pass") {
+    if (state.phase !== "claim" || !state.lastDiscard || state.lastDiscard.playerId === player.id) return "现在不用过牌";
+    state.claimPasses ||= {};
+    state.claimPasses[player.id] = true;
+    state.log.push(`${player.name} 选择过牌`);
+    return null;
+  }
+
+  if (action === "discard") {
+    if (!isCurrent || state.phase !== "discard") return "现在还不能出牌";
+    const tileIndex = Number(payload.tileIndex);
+    if (!Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= player.hand.length) return "请选择一张有效的牌";
+    const tile = player.hand[tileIndex];
+    if (variant === "sichuan" && player.hand.some((item) => tileSuit(item) === player.missingSuit) && tileSuit(tile) !== player.missingSuit) return "定缺牌还没打完，要先打缺门";
+    player.hand.splice(tileIndex, 1);
+    state.discards.push(tile);
+    state.lastDiscard = { tile, playerId: player.id };
+    state.claimPasses = {};
+    state.turn = nextActiveTurn(state, player.seat);
+    state.phase = "claim";
+    state.log.push(`${player.name} 打出 ${tile}`);
+    return null;
+  }
+
+  if (action === "chi") {
+    if (variant !== "beijing" || state.phase !== "claim" || !state.lastDiscard || !isCurrent || state.lastDiscard.playerId === player.id || state.claimPasses?.[player.id]) return "现在不能吃牌";
+    const pair = Array.isArray(payload.tiles) ? payload.tiles.map(String) : [];
+    const valid = chiOptions(player.hand, state.lastDiscard.tile).some((option) => option.join(",") === pair.join(","));
+    if (!valid) return "请选择有效的吃牌组合";
+    if (blockingClaim(state, player.id, 1)) return "有人可以碰、杠或胡，请稍等";
+    player.hand = removeTiles(player.hand, pair);
+    finishMahjongClaim(state, player, "chi", sortTiles([...pair, state.lastDiscard.tile]), state.lastDiscard.playerId);
+    return null;
+  }
+
+  if (action === "peng") {
+    if (state.phase !== "claim" || !state.lastDiscard || state.lastDiscard.playerId === player.id || state.claimPasses?.[player.id] || countTile(player.hand, state.lastDiscard.tile) < 2) return "现在不能碰牌";
+    if (blockingClaim(state, player.id, 2)) return "有人可以胡牌，请稍等";
+    const tile = state.lastDiscard.tile;
+    player.hand = removeTiles(player.hand, [tile, tile]);
+    finishMahjongClaim(state, player, "peng", [tile, tile, tile], state.lastDiscard.playerId);
+    return null;
+  }
+
+  if (action === "gang") {
+    if (state.phase === "claim" && state.lastDiscard && state.lastDiscard.playerId !== player.id && !state.claimPasses?.[player.id] && countTile(player.hand, state.lastDiscard.tile) >= 3) {
+      if (blockingClaim(state, player.id, 2)) return "有人可以胡牌，请稍等";
+      const tile = state.lastDiscard.tile;
+      const source = state.lastDiscard.playerId;
+      player.hand = removeTiles(player.hand, [tile, tile, tile]);
+      finishMahjongClaim(state, player, "gang", [tile, tile, tile, tile], source);
+      drawMahjongTile(state, player);
+      return null;
+    }
+    const tile = String(payload.tile || "");
+    if (!isCurrent || state.phase !== "discard" || countTile(player.hand, tile) !== 4) return "现在不能杠牌";
+    player.hand = removeTiles(player.hand, [tile, tile, tile, tile]);
+    player.melds.push({ type: "angang", tiles: [tile, tile, tile, tile], fromPlayerId: player.id });
+    state.log.push(`${player.name} 暗杠 ${tile}`);
+    drawMahjongTile(state, player);
+    return null;
+  }
+
+  if (action === "hu") {
+    const selfDraw = isCurrent && state.phase === "discard";
+    const discardWin = state.phase === "claim" && state.lastDiscard && state.lastDiscard.playerId !== player.id;
+    if (!selfDraw && !discardWin) return "现在不能胡牌";
+    if (discardWin && state.claimPasses?.[player.id]) return "你已经过牌了";
+    const openHand = (player.melds || []).some((meld) => meld.type !== "angang");
+    if (variant === "beijing" && discardWin && openHand) return "京麻吃碰明杠后只能自摸";
+    const winningTiles = discardWin ? [...player.hand, state.lastDiscard.tile] : player.hand;
+    if (!canMahjongWin(state, player, winningTiles)) return "这副牌还没有胡";
+    const sourceId = discardWin ? state.lastDiscard.playerId : null;
+    if (discardWin) state.discards.pop();
+    settleMahjongWin(state, player, selfDraw, sourceId);
+    state.winnerId = player.id;
+    state.lastDiscard = null;
+    if (variant === "beijing") {
+      state.status = "finished";
+      state.phase = "finished";
+    } else {
+      player.won = true;
+      const active = state.players.filter((item) => !item.won);
+      if (active.length <= 1 || state.winners.length >= 3) {
+        state.status = "finished";
+        state.phase = "finished";
+      } else {
+        const sourceSeat = selfDraw ? player.seat : state.players.find((item) => item.id === sourceId)?.seat ?? player.seat;
+        state.turn = nextActiveTurn(state, sourceSeat);
+        state.phase = "draw";
+      }
+    }
+    return null;
+  }
+  return "未知操作";
+}
+
 async function handle(event, context) {
   const request = requestFromEvent(event);
   const origin = request.headers.origin || "";
@@ -246,11 +578,12 @@ async function handle(event, context) {
   const avatarColor = cleanAvatarColor(payload.avatarColor);
 
   if (action === "create") {
+    const variant = cleanVariant(payload.variant);
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const code = roomCode();
       const state = {
-        status: "waiting", hostId: playerKey,
-        players: [{ id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], seat: 0 }],
+        variant, status: "waiting", hostId: playerKey,
+        players: [{ id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], melds: [], missingSuit: null, won: false, score: 0, seat: 0 }],
         deck: [], discards: [], lastDiscard: null, turn: 0, phase: "waiting", winnerId: null, winningSentence: null, pendingWin: null,
         log: [`${displayName} 开了牌桌`],
       };
@@ -275,7 +608,7 @@ async function handle(event, context) {
     if (!player) {
       if (state.status !== "waiting") return response(origin, 400, { error: "牌局已经开始了" });
       if (state.players.length >= 4) return response(origin, 400, { error: "这个房间已经坐满了" });
-      player = { id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], seat: state.players.length };
+      player = { id: playerKey, name: displayName, avatar, avatarUrl: null, avatarColor, hand: [], melds: [], missingSuit: null, won: false, score: 0, seat: state.players.length };
       state.players.push(player);
       state.log.push(`${displayName} 入座了`);
     } else {
@@ -302,6 +635,9 @@ async function handle(event, context) {
         throw error;
       }
       return response(origin, 200, { dissolved: true, code });
+    } else if (isMahjongRoom(state)) {
+      const error = applyMahjongAction(state, player, action, payload);
+      if (error) return response(origin, 400, { error });
     } else if (action === "start" || action === "restart") {
       if (state.hostId !== playerKey) return response(origin, 400, { error: "只有房主可以开局" });
       if (state.players.length < 2) return response(origin, 400, { error: "至少要有两个人才能开局" });

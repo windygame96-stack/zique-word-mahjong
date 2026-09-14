@@ -2,17 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-
-type AvatarColor = "cinnabar" | "jade" | "ocean" | "plum" | "amber" | "ink";
-type PlayerView = { id: string; name: string; avatar: string; avatarColor: AvatarColor; avatarUrl: string | null; handCount: number; seat: number };
-type RoomView = {
-  code: string; revision: number; status: "waiting" | "playing" | "finished";
-  phase: "waiting" | "draw" | "claim" | "discard" | "voting" | "finished"; turn: number; currentPlayerId: string | null;
-  hostId: string; winnerId: string | null; winningSentence: string | null; deckCount: number;
-  pendingWin: { playerId: string; sentence: string; approvals: number; rejections: number; votesCast: number; totalVoters: number; myVote: "approve" | "reject" | null } | null;
-  lastDiscard: { tile: string; playerId: string } | null;
-  discards: string[]; log: string[]; players: PlayerView[]; hand: string[]; me: { id: string; name: string; seat: number } | null;
-};
+import MahjongGame from "./mahjong-game";
+import type { AvatarColor, GameVariant, PlayerView, RoomView } from "./game-types";
 
 const AVATAR_COLORS: { key: AvatarColor; label: string }[] = [
   { key: "cinnabar", label: "朱砂红" }, { key: "jade", label: "翡翠绿" },
@@ -40,6 +31,7 @@ export default function Home() {
   const [playerKey, setPlayerKey] = useState("");
   const [name, setName] = useState("牌友");
   const [joinCode, setJoinCode] = useState("");
+  const [selectedVariant, setSelectedVariant] = useState<GameVariant>("word");
   const [room, setRoom] = useState<RoomView | null>(null);
   const [selected, setSelected] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
@@ -120,7 +112,7 @@ export default function Home() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [room?.code, playerKey]);
 
-  useEffect(() => { setSelected([]); }, [room?.currentPlayerId, room?.phase, room?.revision]);
+  useEffect(() => { setSelected([]); }, [room?.currentPlayerId, room?.phase]);
 
   const callGame = async (action: string, extra: Record<string, unknown> = {}) => {
     if (!playerKey || busy) return false;
@@ -192,16 +184,23 @@ export default function Home() {
         </header>
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow">2—4 人 · 在线文字麻将</p>
-            <h1>把一句话，<br /><em>打</em>到牌桌上。</h1>
-            <p className="hero-intro">摸到什么字，就说什么话。没有标准答案，只有今晚最值得截图的那一句。</p>
+            <p className="eyebrow">字雀 · 川麻 · 京麻</p>
+            <h1>今晚想打，<br /><em>哪</em>一桌？</h1>
+            <p className="hero-intro">文字麻将继续保留，现在也能开一桌真正的麻将。选玩法、发房号，朋友点链接就能入座。</p>
+            <div className="variant-picker" aria-label="选择麻将玩法">
+              {([
+                ["word", "字雀", "2—4 人 · 用字牌组句子"],
+                ["sichuan", "川麻", "4 人 · 换三张、定缺、血战"],
+                ["beijing", "京麻", "4 人 · 混儿、吃碰提"],
+              ] as [GameVariant, string, string][]).map(([key, label, detail]) => <button key={key} className={selectedVariant === key ? "active" : ""} onClick={() => setSelectedVariant(key)} aria-pressed={selectedVariant === key}><strong>{label}</strong><small>{detail}</small></button>)}
+            </div>
             <div className="profile-fields">
               <label className="name-field"><span>怎么称呼你</span><input value={name} onChange={(event) => setName(event.target.value.slice(0, 10))} placeholder="输入昵称" autoComplete="nickname" /></label>
               <div className="color-picker" aria-label="选择头像颜色">{AVATAR_COLORS.map((item) => <button key={item.key} className={`color-swatch color-${item.key} ${avatarColor === item.key ? "active" : ""}`} onClick={() => setAvatarColor(item.key)} aria-label={item.label} aria-pressed={avatarColor === item.key} />)}</div>
               <small className="profile-note">昵称和颜色只保存在这台设备；刷新、断线会自动回桌。</small>
             </div>
             <div className="start-actions">
-              <button className="create-room" onClick={() => callGame("create")} disabled={busy}>{busy ? "正在铺桌…" : "开一桌"}<span>→</span></button>
+              <button className="create-room" onClick={() => callGame("create", { variant: selectedVariant })} disabled={busy}>{busy ? "正在铺桌…" : `开${selectedVariant === "word" ? "字雀" : selectedVariant === "sichuan" ? "川麻" : "京麻"}房`}<span>→</span></button>
               <div className="join-room"><input inputMode="numeric" maxLength={4} value={joinCode} onChange={(event) => setJoinCode(event.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="输入 4 位房号" /><button onClick={() => callGame("join")} disabled={busy || joinCode.length !== 4}>入座</button></div>
             </div>
             {message && <p className="notice" role="status">{message}</p>}
@@ -214,9 +213,24 @@ export default function Home() {
           </div>
         </section>
         <footer className="landing-footer"><span>玩法借鉴《白色失明文字麻将》 · 非官方线上版本</span><button onClick={() => setRulesOpen(true)}>先看玩法</button></footer>
-        {rulesOpen && <Rules onClose={() => setRulesOpen(false)} />}
+        {rulesOpen && <Rules variant={selectedVariant} onClose={() => setRulesOpen(false)} />}
       </main>
     );
+  }
+
+  if (room.variant === "sichuan" || room.variant === "beijing") {
+    return <>
+      <MahjongGame
+        room={room} playerKey={playerKey} avatarColor={avatarColor} selected={selected} busy={busy} message={message}
+        callGame={callGame} setSelected={setSelected} onLeave={leaveToLobby} onInvite={invite}
+        onRules={() => setRulesOpen(true)} onRename={() => { setRenameDraft(room.me?.name || name); setRenameOpen(true); }}
+        onDissolve={() => setDissolveOpen(true)} onClearMessage={() => setMessage("")}
+      />
+      {rulesOpen && <Rules variant={room.variant} onClose={() => setRulesOpen(false)} />}
+      {shareOpen && <ShareRoom code={room.code} variant={room.variant} onClose={() => setShareOpen(false)} onNotice={setMessage} />}
+      {dissolveOpen && <ConfirmDissolve busy={busy} onCancel={() => setDissolveOpen(false)} onConfirm={() => callGame("dissolve")} />}
+      {renameOpen && <RenamePlayer value={renameDraft} busy={busy} onChange={setRenameDraft} onSkip={() => setRenameOpen(false)} onSave={() => callGame("rename", { name: renameDraft })} />}
+    </>;
   }
 
   const otherPlayers = room.players.filter((player) => player.id !== playerKey);
@@ -284,8 +298,8 @@ export default function Home() {
       </section>
       {message && <div className="game-toast" role="status">{message}<button onClick={() => setMessage("")}>×</button></div>}
       <nav className={`action-bar ${isHost ? "host-actions" : ""}`} aria-label="牌局操作"><button onClick={() => setRulesOpen(true)}>规则</button><button className="secondary" onClick={invite}>邀请朋友</button>{isHost && <button className="danger" onClick={() => setDissolveOpen(true)}>解散房间</button>}<button className="primary" onClick={primary} disabled={primaryDisabled}>{primaryLabel}</button></nav>
-      {rulesOpen && <Rules onClose={() => setRulesOpen(false)} />}
-      {shareOpen && <ShareRoom code={room.code} onClose={() => setShareOpen(false)} onNotice={setMessage} />}
+      {rulesOpen && <Rules variant="word" onClose={() => setRulesOpen(false)} />}
+      {shareOpen && <ShareRoom code={room.code} variant="word" onClose={() => setShareOpen(false)} onNotice={setMessage} />}
       {dissolveOpen && <ConfirmDissolve busy={busy} onCancel={() => setDissolveOpen(false)} onConfirm={() => callGame("dissolve")} />}
       {renameOpen && <RenamePlayer value={renameDraft} busy={busy} onChange={setRenameDraft} onSkip={() => setRenameOpen(false)} onSave={() => callGame("rename", { name: renameDraft })} />}
     </main>
@@ -321,7 +335,8 @@ function ConfirmDissolve({ busy, onCancel, onConfirm }: { busy: boolean; onCance
   </div>;
 }
 
-function ShareRoom({ code, onClose, onNotice }: { code: string; onClose: () => void; onNotice: (message: string) => void }) {
+function ShareRoom({ code, variant, onClose, onNotice }: { code: string; variant: GameVariant; onClose: () => void; onNotice: (message: string) => void }) {
+  const shareNavigator = typeof window === "undefined" ? null : navigator as Navigator & { share?: (data: ShareData) => Promise<void> };
   const url = typeof window === "undefined" ? "" : (() => {
     const target = new URL(window.location.href);
     target.search = "";
@@ -339,7 +354,8 @@ function ShareRoom({ code, onClose, onNotice }: { code: string; onClose: () => v
   };
 
   const systemShare = async () => {
-    try { await navigator.share({ title: "来字雀打文字麻将", text: `房号 ${code}，等你入座`, url }); }
+    const gameName = variant === "sichuan" ? "川麻" : variant === "beijing" ? "京麻" : "字雀";
+    try { await shareNavigator?.share?.({ title: `来打${gameName}`, text: `${gameName}房号 ${code}，等你入座`, url }); }
     catch { /* 用户取消分享 */ }
   };
 
@@ -353,7 +369,7 @@ function ShareRoom({ code, onClose, onNotice }: { code: string; onClose: () => v
       <p className="share-tip">朋友扫码即可打开游戏并自动填写房号</p>
       <div className="share-actions">
         <button className="copy-share" onClick={copyLink}>复制邀请链接</button>
-        {typeof navigator !== "undefined" && navigator.share && <button className="native-share" onClick={systemShare}>更多分享</button>}
+        {shareNavigator?.share && <button className="native-share" onClick={systemShare}>更多分享</button>}
       </div>
     </section>
   </div>;
@@ -363,6 +379,16 @@ function Seat({ player, position, active }: { player: PlayerView; position: stri
   return <div className={`seat seat-${position} ${active ? "active-seat" : ""}`}>{player.avatarUrl ? <img className="seat-avatar" src={player.avatarUrl} alt="" /> : <span className={`seat-avatar color-${player.avatarColor || "cinnabar"}`}>{player.avatar}</span>}<span><strong>{player.name}</strong><small>{player.handCount} 张牌</small></span></div>;
 }
 
-function Rules({ onClose }: { onClose: () => void }) {
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="rules-card" role="dialog" aria-modal="true" aria-label="玩法说明"><button className="modal-close" onClick={onClose}>×</button><p className="eyebrow">三分钟上手</p><h2>怎么打字雀</h2><ol><li><b>摸字</b><span>轮到你时，从牌山摸一张字牌。</span></li><li><b>吃牌</b><span>任意牌友出牌后，你都可以抢先吃下；吃牌当轮不能再摸牌，必须直接出牌。</span></li><li><b>出牌</b><span>选一张暂时用不上的字，打到牌河里。</span></li><li><b>申请胡牌</b><span>用至少四张字牌组成一句话，提交给同桌牌友判定。</span></li><li><b>牌友投票</b><span>申请者不能给自己投票；其余牌友全部投票，赞成过半才算胡，平票则驳回。</span></li></ol><button className="rules-done" onClick={onClose}>懂了，开打</button></section></div>;
+function Rules({ variant, onClose }: { variant: GameVariant; onClose: () => void }) {
+  const content = variant === "sichuan" ? {
+    title: "川麻怎么玩",
+    items: [["换三张", "四人各选三张同花色牌，按本局方向交换。"], ["定缺", "选择万、筒、条中的一门；缺门牌没打完时必须优先打。"], ["碰杠", "可以碰、杠，不能吃上家的牌。"], ["胡牌", "四组面子加一对将，或七对；胡牌时手中不能有定缺牌。"], ["血战", "一家胡后其余人继续，直到三家胡牌或牌墙见底。"]],
+  } : variant === "beijing" ? {
+    title: "京麻怎么玩",
+    items: [["混儿", "开局翻一张牌，它的下一张是万能混儿；万筒条循环，风牌和中发白各自循环。"], ["吃牌", "只能吃上家打出的牌，并选择能组成顺子的两张手牌。"], ["碰杠", "任意牌友的弃牌都可碰、杠；暗杠后补摸一张。"], ["吃碰提", "吃、碰或明杠后，只能靠自摸胡牌。"], ["胡牌", "四组面子加一对将，或七对；点炮者按朋友局简化规则包付。"]],
+  } : {
+    title: "怎么打字雀",
+    items: [["摸字", "轮到你时，从牌山摸一张字牌。"], ["吃牌", "任意牌友出牌后，你都可以抢先吃下；吃牌当轮不能再摸牌，必须直接出牌。"], ["出牌", "选一张暂时用不上的字，打到牌河里。"], ["申请胡牌", "用至少四张字牌组成一句话，提交给同桌牌友判定。"], ["牌友投票", "申请者不能给自己投票；其余牌友全部投票，赞成过半才算胡。"]],
+  };
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="rules-card" role="dialog" aria-modal="true" aria-label="玩法说明"><button className="modal-close" onClick={onClose}>×</button><p className="eyebrow">朋友局规则</p><h2>{content.title}</h2><ol>{content.items.map(([name, detail]) => <li key={name}><b>{name}</b><span>{detail}</span></li>)}</ol><button className="rules-done" onClick={onClose}>懂了，开打</button></section></div>;
 }
