@@ -17,19 +17,54 @@ function readableLog(message: string) {
   return message.replace(/\b([mpsz]\d)\b/g, (tile) => tileLabel(tile));
 }
 
+// Shared vector faces stay crisp in both the hand and the smaller river tiles.
+const PIP_LAYOUTS: Record<number, [number, number][]> = {
+  1: [[30, 40]], 2: [[30, 20], [30, 60]],
+  3: [[16, 18], [30, 40], [44, 62]],
+  4: [[16, 20], [44, 20], [16, 60], [44, 60]],
+  5: [[16, 18], [44, 18], [30, 40], [16, 62], [44, 62]],
+  6: [[16, 18], [44, 18], [16, 40], [44, 40], [16, 62], [44, 62]],
+  7: [[14, 14], [30, 24], [46, 34], [16, 49], [44, 49], [16, 67], [44, 67]],
+  8: [[16, 13], [44, 13], [16, 31], [44, 31], [16, 49], [44, 49], [16, 67], [44, 67]],
+  9: [[14, 18], [30, 18], [46, 18], [14, 40], [30, 40], [46, 40], [14, 62], [30, 62], [46, 62]],
+};
+
+function SuitPattern({ suit, rank }: { suit: string; rank: number }) {
+  if (suit === "s" && rank === 1) return <svg className="mahjong-pattern" viewBox="0 0 60 80" aria-hidden="true">
+    <path d="M29 45 Q9 52 10 70 Q25 66 34 49 M34 46 Q30 64 22 72" fill="#19704f" stroke="#14563e" strokeWidth="2" />
+    <path d="M23 42 C14 31 26 24 33 30 C38 35 43 34 44 24 L42 18 Q39 10 33 16 Q29 20 34 25 L28 31" fill="#19704f" stroke="#14563e" strokeWidth="2" />
+    <path d="M22 36 Q28 52 38 38 Q30 36 22 36" fill="#315e92" />
+    <path d="M42 18 L51 22 L43 24 M33 14 L36 9 L39 15" fill="#c54135" />
+    <circle cx="38" cy="19" r="1.8" fill="#fffdf7" /><circle cx="38" cy="19" r=".8" fill="#24231f" />
+    <path d="M31 48 L34 57 L41 57 M27 49 L28 59 L35 59" fill="none" stroke="#c54135" strokeWidth="2" />
+  </svg>;
+  return <svg className="mahjong-pattern" viewBox="0 0 60 80" aria-hidden="true">
+    {PIP_LAYOUTS[rank]?.map(([x, y], index) => {
+      const color = suit === "s" ? (rank === 7 && index < 3 ? "#c54135" : "#19704f") : (rank === 1 || (rank === 5 && index === 2) || (rank === 9 && index > 2 && index < 6) ? "#c54135" : index % 2 ? "#19704f" : "#315e92");
+      return suit === "p" ? <g key={index} fill="none" stroke={color} strokeWidth={rank === 1 ? 3 : 2}>
+        <circle cx={x} cy={y} r={rank === 1 ? 19 : 6} /><circle cx={x} cy={y} r={rank === 1 ? 12 : 2.5} />
+        {rank === 1 && <circle cx={x} cy={y} r="5" fill={color} />}
+      </g> : <g key={index} stroke={color} strokeLinecap="round">
+        <path d={`M${x - 2} ${y - 6} Q${x} ${y} ${x - 2} ${y + 6} M${x + 2} ${y - 6} Q${x + 4} ${y} ${x + 2} ${y + 6}`} fill="none" strokeWidth="2.5" />
+        <path d={`M${x - 4} ${y - 6} h8 M${x - 3} ${y} h7 M${x - 4} ${y + 6} h8`} strokeWidth="2" />
+      </g>;
+    })}
+  </svg>;
+}
+
 function MahjongTile({ tile, selected = false, mini = false }: { tile: string; selected?: boolean; mini?: boolean }) {
   const honor = HONORS[tile];
   const suit = tile.slice(0, 1);
   const rank = Number(tile.slice(1));
-  return <span className={`${mini ? "mahjong-mini" : "mahjong-face"} suit-${suit} ${selected ? "selected" : ""}`}>
-    {honor ? <strong>{honor}</strong> : <><strong>{NUMERALS[rank]}</strong><small>{SUIT_NAMES[suit]}</small></>}
+  return <span role="img" aria-label={tileLabel(tile)} className={`${mini ? "mahjong-mini" : "mahjong-face"} suit-${suit} ${selected ? "selected" : ""}`}>
+    {honor ? <strong>{honor}</strong> : suit === "p" || suit === "s" ? <SuitPattern suit={suit} rank={rank} /> : <><strong>{NUMERALS[rank]}</strong><small>{SUIT_NAMES[suit]}</small></>}
   </span>;
 }
 
 function MahjongSeat({ player, position, active }: { player: PlayerView; position: string; active: boolean }) {
   return <div className={`seat seat-${position} mahjong-seat ${active ? "active-seat" : ""} ${player.won ? "won-seat" : ""}`}>
     <span className={`seat-avatar color-${player.avatarColor || "cinnabar"}`}>{player.avatar}</span>
-    <span><strong>{player.name}{player.won ? " · 已胡" : ""}</strong><small>{player.handCount} 张 · {player.score >= 0 ? "+" : ""}{player.score} 分{player.missingSuit ? ` · 缺${SUIT_NAMES[player.missingSuit]}` : ""}</small></span>
+    <span className="mahjong-seat-info"><strong>{player.name}{player.won ? " · 已胡" : ""}</strong><small>{player.handCount} 张 · {player.score >= 0 ? "+" : ""}{player.score} 分</small>{player.missingSuit && <b className="missing-suit">缺{SUIT_NAMES[player.missingSuit]}</b>}</span>
   </div>;
 }
 
