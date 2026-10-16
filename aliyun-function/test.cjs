@@ -85,6 +85,13 @@ test("两名玩家可以创建、加入并完成一局", async () => {
   const started = await invoke("POST", { body: { action: "start", code, playerKey: "p1" } });
   assert.equal(started.json.status, "playing");
   assert.equal(started.json.hand.length, 14);
+  const startedState = JSON.parse(rows.get(code).state_json);
+  const fullDeck = [...startedState.deck, ...startedState.players.flatMap((item) => item.hand)];
+  for (const char of ["笑", "哭", "疯", "怕", "爽", "傻", "坏", "美", "亲", "抱", "跑", "飞", "滚", "偷", "骗", "救", "神", "鬼", "梦", "酒", "钱", "狗", "王", "命"]) {
+    assert.equal(fullDeck.filter((tile) => tile === char).length, 1);
+  }
+  assert.equal(fullDeck.length, 144);
+  assert.equal(fullDeck.includes("今"), false);
 
   const discarded = await invoke("POST", { body: { action: "discard", code, playerKey: "p1", tileIndex: 0 } });
   assert.equal(discarded.json.phase, "claim");
